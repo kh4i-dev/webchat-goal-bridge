@@ -1,0 +1,32 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <style>
+    body { font: 13px system-ui, sans-serif; width: 300px; margin: 0; padding: 12px; background: #111827; color: #e5e7eb; }
+    h1 { font-size: 14px; margin: 0 0 10px; }
+    label { display: block; margin-top: 8px; font-size: 11px; color: #9ca3af; }
+    input { width: 100%; box-sizing: border-box; margin-top: 2px; padding: 5px 7px; border-radius: 6px; border: 1px solid #374151; background: #1f2937; color: #e5e7eb; }
+    button { margin-top: 10px; width: 100%; padding: 7px; border: 0; border-radius: 6px; background: #2563eb; color: #fff; cursor: pointer; }
+    button.alt { background: #374151; }
+    #status { margin-top: 8px; font-size: 11px; min-height: 16px; color: #93c5fd; }
+    .row { display: flex; gap: 6px; align-items: center; margin-top: 8px; }
+    .row input { width: auto; }
+  </style>
+</head>
+<body>
+  <h1>wgb-companion</h1>
+  <label>Server (wgb serve)</label>
+  <input id="serverUrl" />
+  <label>Token (nếu có)</label>
+  <input id="token" />
+  <label>Trigger</label>
+  <input id="trigger" />
+  <div class="row"><input type="checkbox" id="enabled" /> <span>Bật content script</span></div>
+  <div class="row"><input type="checkbox" id="autoSend" /> <span>Tự gửi kết quả vào chat</span></div>
+  <button id="save">Lưu</button>
+  <button id="test" class="alt">Test kết nối</button>
+  <div id="status"></div>
+  <script src="popup.js"></script>
+</body>
+</html>

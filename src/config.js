@@ -34,6 +34,10 @@ const DEFAULTS = {
     type: 'echo',
     cwd: '.',
     timeoutMs: 600000
+  },
+  serve: {
+    port: 8787,
+    token: ''
   }
 };
 

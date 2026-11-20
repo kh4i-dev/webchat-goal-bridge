@@ -64,7 +64,7 @@ export async function ensureOn(brave, log = () => {}) {
     log('brave', 'Brave dang chay khong co CDP -> dong nhe (luu session) va nap lai voi CDP');
     await gracefulCloseAll(gracefulCloseTimeoutMs);
   }
-  launchBrave(brave, ['--remote-debugging-port=' + cdpPort, ...restoreArgs]);
+  launchBrave(brave, ['--remote-debugging-port=' + cdpPort, ...restoreArgs, ...(brave.extraArgs || [])]);
   const deadline = Date.now() + 30000;
   while (Date.now() < deadline) {
     const st = await cdpStatus(cdpPort);
@@ -84,6 +84,6 @@ export async function ensureOff(brave, log = () => {}) {
   }
   log('brave', 'Dong Brave (co CDP) va nap lai binh thuong khong mo port');
   await gracefulCloseAll(gracefulCloseTimeoutMs);
-  launchBrave(brave, [...restoreArgs]);
+  launchBrave(brave, [...restoreArgs, ...(brave.extraArgs || [])]);
   return { action: 'cdp-closed-and-relaunched-normal' };
 }

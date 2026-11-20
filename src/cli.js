@@ -27,7 +27,8 @@ Cach dung: node src/cli.js <command> [flags]
   watch --platform <p>    Vong lap: cho tin nhan moi co trigger -> tao goal -> chay runner -> tra ket qua
                           flags: --once (1 vong), --catchup (xu ly tin @bridge dang ton tai), --trigger "@bridge"
   goals [--short]         Xem goal store
-  runners                 Liet ke runner co san (echo, exec, opencode)
+  runners                 Liet ke runner co san (echo, exec, opencode, inbox)
+  serve                   Control plane HTTP cho extension (http://127.0.0.1:8787)
   config path             In duong dan config
 
 Platform: chatgpt, gemini. Flags chung: --json, --url <substr>, --last N
@@ -109,7 +110,13 @@ async function resolvePlatform(cfg, flags) {
   }
   if (!conn) throw new Error('Khong attach duoc CDP vao tab: ' + (target?.url || '?'));
 
-  const ready = await connector.waitForReady(conn);
+  let ready = await connector.waitForReady(conn);
+  if (ready && /about:blank|^$/.test(ready.url || '')) {
+    // /json/new thoi thua tao tab ma khong dieu huong — tu navigate
+    log('platform', 'tab moi la about:blank, tu navigate den', homeUrl(cfg, platform));
+    await conn.evaluate(`location.href = ${JSON.stringify(homeUrl(cfg, platform))}`);
+    ready = await connector.waitForReady(conn);
+  }
   return { platform, connector, target, conn, ready };
 }
 
@@ -263,6 +270,13 @@ async function cmdGoals(cfg, flags) {
   );
 }
 
+async function cmdServe(cfg) {
+  const { startServer } = await import('./server.js');
+  startServer(cfg);
+  // giu process chay cho den khi Ctrl+C
+  await new Promise(() => {});
+}
+
 async function main() {
   const { cmd, flags } = parseArgs(process.argv.slice(2));
   if (cmd.length === 0 || cmd[0] === 'help' || flags.help) {
@@ -291,6 +305,8 @@ async function main() {
       return cmdGoals(cfg, flags);
     case 'runners':
       return out(listRunners(), flags);
+    case 'serve':
+      return cmdServe(cfg);
     case 'config':
       return out({ config: projectRoot() + '\\config.json', root: projectRoot() }, flags);
     default:
