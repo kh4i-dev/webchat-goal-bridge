@@ -20,10 +20,18 @@ const COMPOSER_SELECTOR =
   'form [data-composer-markdown][contenteditable="true"][role="textbox"]';
 
 const EDITOR = `(() => {
-  const cands = [...document.querySelectorAll(${JSON.stringify(COMPOSER_SELECTOR)})]
-    .filter((el) => el.offsetParent !== null || el.isContentEditable);
-  if (cands.length !== 1) return { error: cands.length === 0 ? 'no-editor' : 'ambiguous-editors', n: cands.length };
-  return { editor: cands[0], kind: cands[0].id === 'prompt-textarea' ? 'prosemirror' : 'rich' };
+  const cands = [...document.querySelectorAll(${JSON.stringify(COMPOSER_SELECTOR)})];
+  const vis = cands.filter((el) => el.offsetParent !== null && el.getBoundingClientRect().height >= 8);
+  if (vis.length === 0) return { error: 'no-editor', n: cands.length };
+  const score = (el) =>
+    (el.id === 'prompt-textarea' ? 4 : 0) +
+    (el.closest('form[data-chatgpt-composer]') ? 2 : 0) +
+    (el.getAttribute('data-placeholder') ? 1 : 0);
+  vis.sort((a, b) => score(b) - score(a));
+  const top = vis[0];
+  const ties = vis.filter((el) => score(el) === score(top)).length;
+  if (ties > 1) return { error: 'ambiguous-editors', n: ties, score: score(top) };
+  return { editor: top, kind: top.id === 'prompt-textarea' ? 'prosemirror' : 'rich', score: score(top) };
 })()`;
 
 const exprProbe = `(() => {
@@ -62,6 +70,44 @@ const exprConvId = `(() => (location.pathname.match(/\\/c\\/([0-9a-f-]{36})/) ||
 
 const exprUserCount = `(() => document.querySelectorAll('[data-message-author-role="user"]').length)()`;
 
+/** Danh sach messages tu RECORD (UI moi 2026 khong con data-message-author-role). */
+function exprRecordMessages(convId) {
+  return `(async () => {
+    let tok = window.__wgbTok;
+    if (!tok || Date.now() - tok.ts > 5 * 60 * 1000) {
+      const s = await fetch('/api/auth/session').then((r) => r.json()).catch(() => null);
+      if (!s || !s.accessToken) return { auth: false };
+      tok = window.__wgbTok = { v: s.accessToken, ts: Date.now() };
+    }
+    const rec = await fetch('/backend-api/conversation/${convId}', {
+      headers: { Authorization: 'Bearer ' + tok.v }
+    }).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+    if (!rec || !rec.mapping) return { auth: true, rec: false };
+    const mapping = rec.mapping;
+    let node = mapping[rec.current_node];
+    const chain = [];
+    while (node) { chain.unshift(node); node = mapping[node.parent]; }
+    const msgs = [];
+    for (const n of chain) {
+      const m = n.message;
+      if (!m || !m.author || !m.content || !m.content.parts) continue;
+      const role = m.author.role;
+      if (role !== 'user' && role !== 'assistant') continue;
+      if (m.metadata && m.metadata.is_visually_hidden_from_user) continue;
+      const text = (m.content.parts || []).filter((p) => typeof p === 'string').join('\\n').trim();
+      if (!text) continue;
+      msgs.push({
+        id: m.id || (role + '-' + (m.create_time || 0) + '-' + text.slice(0, 24)),
+        role,
+        text,
+        t: m.create_time || 0,
+        endTurn: role === 'assistant' ? m.end_turn : undefined
+      });
+    }
+    return { auth: true, rec: true, msgs };
+  })()`;
+}
+
 function exprFill(text) {
   // Chunked insertText ≤1500 chars + fingerprint verify (chatgpt-use check_fingerprint).
   const chunks = [];
@@ -92,15 +138,28 @@ function exprFill(text) {
 }
 
 const exprSubmit = `(() => new Promise((resolve) => {
-  const btn = document.querySelector('button[data-testid="send-button"]')
-    || document.querySelector('button[data-testid="fruitjuice-send-button"]')
-    || document.querySelector('form[data-chatgpt-composer] button[data-testid*="send"]');
-  if (btn && !btn.disabled) { btn.click(); return resolve({ via: 'button' }); }
-  const ev = new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true });
-  const el = document.querySelector(${JSON.stringify(COMPOSER_SELECTOR)});
-  if (!el) return resolve({ via: 'none' });
-  el.dispatchEvent(ev);
-  resolve({ via: 'enter' });
+  const editor = document.querySelector(${JSON.stringify(COMPOSER_SELECTOR)});
+  // 1) form chua composer: requestSubmit / nut submit — tin cay nhat, khong phu thuoc testid
+  const form = editor ? editor.closest('form') : null;
+  if (form) {
+    const sub = form.querySelector('button[type="submit"]');
+    if (sub && !sub.disabled) { sub.click(); return resolve({ via: 'form-submit-btn' }); }
+    try { form.requestSubmit(); return resolve({ via: 'requestSubmit' }); } catch (e) { /* tiep tuc */ }
+  }
+  // 2) button co nhan send da ngon ngu (UI moi bo data-testid; tieng Viet: "Gui")
+  const btn = [...document.querySelectorAll('button')].find((b) => {
+    if (b.disabled) return false;
+    const label = ((b.getAttribute('aria-label') || '') + ' ' + (b.getAttribute('title') || '') + ' ' + (b.getAttribute('data-testid') || '')).toLowerCase();
+    return /(send|g[uiử]|submit|dispatch)/i.test(label) && b.offsetParent !== null;
+  });
+  if (btn) { btn.click(); return resolve({ via: 'aria-send-btn' }); }
+  // 3) Enter synthetic (mot so UI chap nhan)
+  if (editor) {
+    const ev = new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true });
+    editor.dispatchEvent(ev);
+    return resolve({ via: 'enter' });
+  }
+  resolve({ via: 'none' });
 }))()`;
 
 function exprServerFinal(convId) {
@@ -172,11 +231,26 @@ export default defineConnector({
     return conn.evaluate(exprProbeFinal);
   },
 
-  readMessages(conn) {
+  /** Record-first: UI moi 2026 mat data-message-author-role nen DOM chi la fallback. */
+  async readMessages(conn) {
+    const convId = await this.convId(conn);
+    if (convId) {
+      try {
+        const st = await conn.evaluate(exprRecordMessages(convId));
+        if (st && st.rec) return st.msgs;
+      } catch { /* roi xuong DOM */ }
+    }
     return conn.evaluate(exprRead);
   },
 
   async isGenerating(conn) {
+    const convId = await this.convId(conn);
+    if (convId) {
+      try {
+        const st = await conn.evaluate(exprServerFinal(convId));
+        if (st && st.rec) return Boolean(!st.done && st.lastRole === 'assistant');
+      } catch { /* roi xuong DOM */ }
+    }
     return Boolean(await conn.evaluate(exprGenerating));
   },
 
@@ -184,9 +258,10 @@ export default defineConnector({
     return conn.evaluate(exprConvId);
   },
 
-  /** Receipt: so user-turn DOM tang len. */
+  /** Receipt: so user-turn (record neu co, DOM fallback). */
   async userTurnCount(conn) {
-    return conn.evaluate(exprUserCount);
+    const msgs = await this.readMessages(conn);
+    return msgs.filter((m) => m.role === 'user').length;
   },
 
   /**
@@ -198,14 +273,14 @@ export default defineConnector({
     if (!filled.ok) return { ok: false, stage: filled.stage, detail: filled };
     const before = await this.userTurnCount(conn);
     const via = await conn.evaluate(exprSubmit);
-    for (let i = 0; i < 8; i++) {
+    for (let i = 0; i < 10; i++) {
       await sleep(1000);
       const now = await this.userTurnCount(conn);
       if (now > before) {
         return { ok: true, submitted: 'yes', via: via.via, convId: await this.convId(conn) };
       }
-      if (i === 2 && via.via === 'button') {
-        // them mot nha Enter fallback
+      if (i === 3 && via.via !== 'enter') {
+        // mot nha Enter khi receipt chua xac nhan
         await conn.evaluate(exprSubmit);
       }
     }

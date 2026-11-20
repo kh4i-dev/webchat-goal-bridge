@@ -37,6 +37,16 @@ export async function newTarget(port, url) {
   }
 }
 
+/** Nang tab len foreground — bang buoc: tab bi frozen o nen se khong tra loi Runtime.evaluate. */
+export async function activateTarget(port, id) {
+  try {
+    await jfetch(`${base(port)}/json/activate/${id}`, {}, 5000);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export class Cdp {
   constructor(wsUrl) {
     this.wsUrl = wsUrl;

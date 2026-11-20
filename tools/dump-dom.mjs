@@ -1,5 +1,5 @@
 // One-off DOM diagnostic for a platform tab: node tools/dump-dom.mjs [urlSubstr]
-import { findPageTargets, attach } from '../src/cdp/client.js';
+import { findPageTargets, attach, activateTarget } from '../src/cdp/client.js';
 
 const substr = process.argv[2] || 'chatgpt.com';
 const pages = await findPageTargets(9222, substr);
@@ -8,6 +8,7 @@ if (!pages.length) {
   process.exit(1);
 }
 const t = pages[0];
+await activateTarget(9222, t.id);
 const c = await attach(t);
 const info = await c.evaluate(`(() => {
   const ces = [...document.querySelectorAll('[contenteditable="true"]')].map((el) => ({
