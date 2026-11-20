@@ -1,0 +1,26 @@
+{
+  "name": "webchat-goal-bridge",
+  "version": "0.1.0",
+  "description": "Long-waiting bridge: logged-in ChatGPT/Gemini web chats (Brave via CDP) <-> local coding harness, with a persistent goal loop and file-acceptance flow",
+  "type": "module",
+  "bin": {
+    "wgb": "src/cli.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node src/cli.js",
+    "test": "node test/run.js"
+  },
+  "keywords": [
+    "chatgpt",
+    "gemini",
+    "cdp",
+    "brave",
+    "opencode",
+    "agent",
+    "orchestrator"
+  ],
+  "license": "MIT"
+}

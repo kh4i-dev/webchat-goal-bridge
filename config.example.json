@@ -1,0 +1,25 @@
+{
+  "brave": {
+    "exe": "C:\\Program Files\\BraveSoftware\\Brave-Browser\\Application\\brave.exe",
+    "cdpPort": 9222,
+    "restoreArgs": ["--restore-last-session"],
+    "gracefulCloseTimeoutMs": 20000
+  },
+  "platforms": {
+    "chatgpt": {
+      "homeUrl": "https://chatgpt.com/"
+    },
+    "gemini": {
+      "homeUrl": "https://gemini.google.com/app"
+    }
+  },
+  "trigger": "@bridge",
+  "replyPrefix": "[wgb]",
+  "pollMs": 8000,
+  "replyTimeoutMs": 180000,
+  "runner": {
+    "type": "echo",
+    "cwd": ".",
+    "timeoutMs": 600000
+  }
+}
