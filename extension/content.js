@@ -25,8 +25,18 @@ const DEFAULTS = {
   enabled: true
 };
 
+// lib.js export qua globalThis.WGB_LIB (content script không import ESM được).
+// v1.8.1: destructure thay vì gọi bare — gọi bare là ReferenceError và giết
+// content script ngay khi load (tab mới không có pill — đã gặp thật).
+const {
+  nextLimitUntil,
+  platformOfHost,
+  isReplyEcho,
+  shouldSendReceipt,
+  manifestVersion: manifestVersionOf
+} = globalThis.WGB_LIB;
 const BUDGET = { recordFetch: 40, sends: 40 };
-const VERSION = manifestVersion(chrome.runtime.getManifest());
+const VERSION = manifestVersionOf(chrome.runtime.getManifest());
 
 const S = { ...DEFAULTS, lastHash: null, busyGoalId: null, lastSendTs: 0, firstPass: true, dead: false };
 chrome.storage.sync.get(DEFAULTS, (s) => Object.assign(S, s));
