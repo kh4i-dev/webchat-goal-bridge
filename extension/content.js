@@ -206,7 +206,12 @@ async function readRecordLastUser() {
 function readLastUserGemini() {
   const users = document.querySelectorAll('user-query');
   const el = users[users.length - 1];
-  return el ? (el.innerText || '').trim() || null : null;
+  if (!el) return null;
+  // Gemini bọc "Bạn đã nói <text>" — lấy .query-text để trigger @wgb khớp được
+  const qt = el.querySelector('.query-text');
+  let text = (qt ? qt.innerText : (el.innerText || '')).trim();
+  text = text.replace(/^bạn đã nói\s*/i, '').trim();
+  return text || null;
 }
 
 function readLastUserClaude() {

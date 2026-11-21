@@ -37,21 +37,32 @@ const exprRead = `(() => {
   const blocks = Array.from(document.querySelectorAll('user-query, model-response'));
   return blocks.map((el, i) => {
     const isUser = el.tagName === 'USER-QUERY';
-    const textEl = isUser ? el : (el.querySelector('message-content .markdown') || el);
+    let textEl;
+    if (isUser) {
+      // Gemini bọc "Bạn đã nói <text>" — lấy .query-text để có text thuần, nếu không trigger @wgb sẽ không bao giờ khớp
+      textEl = el.querySelector('.query-text') || el;
+    } else {
+      textEl = el.querySelector('message-content .markdown') || el;
+    }
+    let text = (textEl.innerText || '').trim();
+    if (isUser) text = text.replace(/^bạn đã nói\\s*/i, '').trim();
     return {
       i,
-      id: (isUser ? 'u' : 'a') + i + '-' + (textEl.innerText || '').length,
+      id: (isUser ? 'u' : 'a') + i + '-' + text.length,
       role: isUser ? 'user' : 'assistant',
-      text: (textEl.innerText || '').trim()
+      text
     };
   }).filter((m) => m.text.length > 0);
 })()`;
 
 const exprGenerating = `(() => {
-  const spinner = !!document.querySelector('mat-progress-spinner, mat-spinner');
+  // Spinner "ma": Gemini giữ mat-spinner trong DOM cả khi idle → chỉ tính spinner
+  // VISIBLE + nút send bị disabled (auto-chat: spinner + disabled send combo)
+  const visSpin = [...document.querySelectorAll('mat-progress-spinner, mat-spinner')]
+    .some((el) => el.offsetParent !== null && el.getBoundingClientRect().height > 0);
   const btn = document.querySelector("gem-icon-button.send-button");
-  const disabled = btn && (btn.hasAttribute('aria-disabled') || btn.closest('.disabled') !== null);
-  return spinner || Boolean(disabled);
+  const btnDisabled = btn && (btn.getAttribute('aria-disabled') === 'true' || btn.closest('.disabled') !== null);
+  return Boolean(visSpin || btnDisabled);
 })()`;
 
 const exprUserCount = `(() => document.querySelectorAll('user-query').length)()`;
@@ -147,19 +158,33 @@ export default defineConnector({
     let lastText = '';
     let stable = 0;
     while (Date.now() < deadline) {
-      const messages = await this.readMessages(conn);
+      let messages;
+      let generating;
+      try {
+        messages = await this.readMessages(conn);
+        generating = await this.isGenerating(conn);
+      } catch (err) {
+        if (/timed out/i.test(err.message) && conn.bringToFront) {
+          await conn.bringToFront(); // tab freeze — đánh thức rồi đọc tiếp
+          continue;
+        }
+        throw err;
+      }
       const assistants = messages.filter((m) => m.role === 'assistant');
-      const generating = await this.isGenerating(conn);
       if (generating) sawGenerating = true;
       const newText = assistants.length ? assistants[assistants.length - 1].text : '';
       const grew = assistants.length > baselineCount;
-      if (grew && !generating) {
-        if (newText === lastText) {
-          stable++;
-          if (stable >= 2 && (sawGenerating || stable >= 3)) return assistants.slice(baselineCount);
-        } else {
-          stable = 0;
-        }
+      if (grew) {
+        if (newText === lastText) stable++;
+        else stable = 0;
+        // Bình thường: hết generating + ổn định 2 poll. Phantom spinner: text ổn định
+        // 6 poll (~11s) vẫn chấp nhận — không treo vô hạn vì spinner ma.
+        const done = !generating
+          ? stable >= 2 && (sawGenerating || stable >= 3)
+          : stable >= 6;
+        if (done) return assistants.slice(baselineCount);
+      } else {
+        stable = 0;
       }
       lastText = newText;
       if (onTick) onTick({ generating, assistants: assistants.length });

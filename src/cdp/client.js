@@ -86,7 +86,7 @@ export class Cdp {
     return this._open && this.ws && this.ws.readyState === WebSocket.OPEN;
   }
 
-  send(method, params = {}) {
+  send(method, params = {}, timeoutMs = 120000) {
     if (!this.open) throw new Error('CDP connection closed');
     const id = ++this._id;
     return new Promise((resolve, reject) => {
@@ -102,18 +102,18 @@ export class Cdp {
           this._pending.delete(id);
           reject(new Error(`CDP ${method} timed out`));
         }
-      }, 120000);
+      }, timeoutMs);
     });
   }
 
   /** Evaluate a JS expression in the page. Returns the JSON-serialised result value. */
-  async evaluate(expression) {
+  async evaluate(expression, timeoutMs = 120000) {
     const res = await this.send('Runtime.evaluate', {
       expression,
       returnByValue: true,
       awaitPromise: true,
       userGesture: true
-    });
+    }, timeoutMs);
     if (res?.exceptionDetails) {
       const d = res.exceptionDetails;
       const txt = d.exception?.description || d.text || 'evaluate failed';
@@ -122,14 +122,21 @@ export class Cdp {
     return res?.result?.value;
   }
 
+  /** Tab nền có thể bị freeze — đánh thức: HTTP activate + Page.bringToFront. */
+  async bringToFront() {
+    try { await activateTarget(this.meta.port, this.meta.id); } catch { /* noop */ }
+    try { await this.send('Page.bringToFront', {}, 8000); } catch { /* noop */ }
+  }
+
   close() {
     try { this.ws?.close(); } catch { /* noop */ }
     this._open = false;
   }
 }
 
-export async function attach(target) {
+export async function attach(target, port = 9222) {
   const conn = new Cdp(target.webSocketDebuggerUrl);
+  conn.meta = { port, id: target.id };
   await conn.connect();
   return conn;
 }

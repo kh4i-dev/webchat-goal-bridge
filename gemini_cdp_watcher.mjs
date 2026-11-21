@@ -23,7 +23,9 @@ function flag(name) {
 }
 
 const CDP = arg("--cdp", "http://127.0.0.1:9222");
-const URL_PATTERN = new RegExp(arg("--url-pattern", "gemini\\.google\\.com/app"));
+const SITE = arg("--site", "gemini");
+const URL_PATTERN = new RegExp(arg("--url-pattern",
+  SITE === "chatgpt" ? "chatgpt\\.com/(c|g)/" : "gemini\\.google\\.com/app"));
 const BASE = arg("--base", path.join(path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1")), "state"));
 const INBOX = arg("--inbox", path.join(BASE, "inbox"));
 const OUTBOX = arg("--outbox", path.join(BASE, "outbox"));
@@ -104,9 +106,25 @@ async function evaluate(cdp, expression, awaitPromise = false) {
 }
 
 // ---------- JS chạy trong trang chat ----------
+const SITES = {
+  gemini: {
+    userSel: 'user-query, .user-query-container, [data-test-id="user-query"]',
+    modelSel: 'model-response, .model-response-container, [data-test-id="model-response"]',
+    composerSel: 'rich-textarea .ql-editor, div.ql-editor[contenteditable="true"], textarea[aria-label]',
+    sendSel: 'button.send-button, [data-test-id="send-button"]',
+  },
+  chatgpt: {
+    userSel: '[data-message-author-role="user"]',
+    modelSel: '[data-message-author-role="assistant"]',
+    composerSel: '#prompt-textarea, div[contenteditable="true"][id*="prompt"]',
+    sendSel: 'button[data-testid="send-button"]',
+  },
+};
+const SITE_CFG = SITES[SITE] ?? SITES.gemini;
+
 const EXTRACT_JS = `(() => {
-  const users = [...document.querySelectorAll('user-query, .user-query-container, [data-test-id="user-query"]')];
-  const models = [...document.querySelectorAll('model-response, .model-response-container, [data-test-id="model-response"]')];
+  const users = [...document.querySelectorAll(${JSON.stringify(SITE_CFG.userSel)})];
+  const models = [...document.querySelectorAll(${JSON.stringify(SITE_CFG.modelSel)})];
   const lastUserEl = users[users.length - 1] || null;
   const lastUser = lastUserEl ? lastUserEl.innerText.trim().slice(0, 8000) : null;
   const imgs = lastUserEl
@@ -129,18 +147,18 @@ const FETCH_IMG_JS = (src) => `(async () => {
 })()`;
 
 const SEND_JS = (text) => `(async () => {
-  const editor = document.querySelector('rich-textarea .ql-editor, div.ql-editor[contenteditable="true"]')
-    || document.querySelector('textarea[aria-label]');
+  const editor = document.querySelector(${JSON.stringify(SITE_CFG.composerSel)});
   if (!editor) return JSON.stringify({ ok: false, reason: 'composer_not_found' });
   editor.focus();
   document.execCommand('selectAll', false, null);
   document.execCommand('insertText', false, ${JSON.stringify(text)});
   await new Promise(r => setTimeout(r, 300));
-  const btn = [...document.querySelectorAll('button')].find(b => {
-    const a = (b.getAttribute('aria-label') || '') + ' ' + (b.getAttribute('mattooltip') || '');
-    return /send|g[ửu]i/i.test(a) && !b.disabled;
-  }) || document.querySelector('button.send-button, [data-test-id="send-button"]');
-  if (!btn) return JSON.stringify({ ok: false, reason: 'send_button_not_found' });
+  const btn = document.querySelector(${JSON.stringify(SITE_CFG.sendSel)})
+    || [...document.querySelectorAll('button')].find(b => {
+      const a = (b.getAttribute('aria-label') || '') + ' ' + (b.getAttribute('mattooltip') || '');
+      return /send|g[ửu]i/i.test(a) && !b.disabled;
+    });
+  if (!btn || btn.disabled) return JSON.stringify({ ok: false, reason: 'send_button_not_found' });
   btn.click();
   await new Promise(r => setTimeout(r, 1200));
   return JSON.stringify({ ok: true });

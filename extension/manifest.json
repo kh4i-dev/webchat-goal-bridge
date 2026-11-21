@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "wgb-companion — webchat goal bridge",
-  "version": "1.7.0",
+  "version": "1.7.1",
   "description": "Chat web làm NÃO chỉ đạo, agent local làm TAY CHÂN: gõ '@wgb <task>' trong ChatGPT/Gemini/Claude, extension dispatch qua wgb serve (127.0.0.1:8787) rồi điền kết quả về chat để duyệt. Thay thế Muse.",
   "permissions": ["storage"],
   "host_permissions": [
