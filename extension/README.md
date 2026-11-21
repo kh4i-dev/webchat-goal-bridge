@@ -32,3 +32,19 @@ wgb-companion (extension MV3)  ──POST /dispatch──►  wgb serve (127.0.0
 - Khi goal đang chạy, pill xanh hiển thị tiến độ; chống echo tự động (bỏ qua tin `[wgb]`, cooldown 20s).
 - Đổi cấu hình trong popup của extension (server URL, trigger, autoSend).
 - Chỉ hoạt động khi `wgb serve` đang chạy. Máy khác dùng được nếu mở port + đặt token.
+
+## v1.1 — bài học throttle đắt (2026-11-21)
+
+v1.0 poll record API **mỗi 3s** (~1.200 request/giờ) → tự gây "A temporary limit is
+preventing this chat from loading" (ChatGPT throttle). v1.1 sửa theo chuẩn
+`chatgpt-use` (15 loads/40 sends mỗi giờ):
+
+1. **Record fetch giữ nhịp 15s/lần** (mỗi lần chỉ 1 request) — thay vì 3s.
+2. **Backoff luỹ thừa khi bị limit**: 60s → 120s → ... tối đa 5 phút; pill hiển thị
+   thời gian nghỉ; reset khi thành công. **Tin cũ không mất** — chỉ bị throttle.
+3. **Dedupe theo nội dung** (`doneHashes`, tối đa 100 task gần nhất): task trùng
+   không dispatch lại — cho phép xử lý **ngay tin đầu tiên** sau khi load (hết cảnh
+   "tin đầu bị nuốt" của v1.0).
+
+Sau khi sửa file: `brave://extensions` → nạp lại (icon refresh trên card
+wgb-companion) → reload các tab chat.

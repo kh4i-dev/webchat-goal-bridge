@@ -9,6 +9,7 @@ const DEFAULTS = {
   replyPrefix: '[wgb]',
   autoSend: true,
   pollMs: 3000,
+  recordPollMs: 15000,
   goalTimeoutMs: 900000,
   enabled: true
 };
@@ -18,6 +19,16 @@ chrome.storage.sync.get(DEFAULTS, (s) => Object.assign(S, s));
 chrome.storage.onChanged.addListener((ch) => {
   for (const [k, v] of Object.entries(ch)) S[k] = v.newValue;
 });
+
+// Dedupe theo noi dung (aegisloop hashPayload): task da dispatch bao gio thi bo qua —
+// cho phep xu ly ngay tin dau tien sau khi load ma khong so re-run.
+let doneHashes = [];
+chrome.storage.local.get({ doneHashes: [] }, (s) => { doneHashes = s.doneHashes || []; });
+function rememberDone(h) {
+  doneHashes.push(h);
+  if (doneHashes.length > 100) doneHashes.shift();
+  chrome.storage.local.set({ doneHashes });
+}
 
 const HOST = location.host;
 const PLATFORM = HOST.includes('chatgpt') ? 'chatgpt' : HOST.includes('gemini') ? 'gemini' : 'claude';
@@ -32,6 +43,9 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // ---------- doc tin user cuoi ----------
 
 let wgbTok = null;
+let lastRecordFetch = 0;
+let rateLimitedUntil = 0;
+let rateLimitStreak = 0;
 async function bearer() {
   if (wgbTok && Date.now() - wgbTok.ts < 5 * 60 * 1000) return wgbTok.v;
   const s = await fetch('/api/auth/session').then((r) => r.json()).catch(() => null);
@@ -40,15 +54,36 @@ async function bearer() {
   return wgbTok.v;
 }
 
+// Bài học throttle (chatgpt-use): record fetch là 1 request nhưng poll 3s = ~1200/h
+// → tự gây "temporary limit". v1.1: giữ nhịp recordPollMs (mặc định 15s) + backoff
+// luỹ thừa 60s→120s→...→max 5 phút khi bị limit, reset khi thành công.
 async function readLastUserChatGPT() {
+  if (Date.now() < rateLimitedUntil) return null;
+  if (Date.now() - lastRecordFetch < S.recordPollMs) return null;
+  lastRecordFetch = Date.now();
   const convId = (location.pathname.match(/\/c\/([0-9a-f-]{36})/) || [])[1];
   if (!convId) return null;
   const tok = await bearer();
   if (!tok) return null;
-  const rec = await fetch('/backend-api/conversation/' + convId, {
-    headers: { Authorization: 'Bearer ' + tok }
-  }).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+  let res = null;
+  try {
+    res = await fetch('/backend-api/conversation/' + convId, {
+      headers: { Authorization: 'Bearer ' + tok }
+    });
+  } catch {
+    return null;
+  }
+  if (!res.ok) {
+    rateLimitStreak++;
+    const waitMs = Math.min(300000, 60000 * rateLimitStreak);
+    rateLimitedUntil = Date.now() + waitMs;
+    pillSet('ChatGPT rate limit — nghi ' + Math.round(waitMs / 1000) + 's (tin cu khong mat)', false);
+    return null;
+  }
+  const rec = await res.json().catch(() => null);
   if (!rec || !rec.mapping) return null;
+  rateLimitStreak = 0;
+  rateLimitedUntil = 0;
   let node = rec.mapping[rec.current_node];
   const chain = [];
   while (node) { chain.unshift(node); node = rec.mapping[node.parent]; }
@@ -161,7 +196,11 @@ function relay(msg) {
   });
 }
 
-async function dispatchTask(task) {
+async function dispatchTask(task, contentHash) {
+  if (doneHashes.includes(contentHash)) {
+    pillSet('task nay da xu ly truoc — doi y khac', false);
+    return;
+  }
   S.busyGoalId = 'pending';
   pillSet('dispatch: ' + task.slice(0, 40), true);
   const d = await relay({ path: '/dispatch', method: 'POST', body: { text: task, platform: PLATFORM, chatUrl: location.href } });
@@ -170,6 +209,7 @@ async function dispatchTask(task) {
     S.busyGoalId = null;
     return;
   }
+  rememberDone(contentHash);
   const goalId = d.goalId;
   S.busyGoalId = goalId;
   pillSet('goal ' + goalId + ' dang chay...', true);
@@ -208,13 +248,23 @@ async function tick() {
   if (flat.startsWith(S.replyPrefix)) return;                    // echo cua chinh no
   if (Date.now() - S.lastSendTs < 20000) return;                 // cooldown
   const h = hash(flat);
-  if (S.firstPass) { S.lastHash = h; S.firstPass = false; pillSet(PLATFORM + ' san sang — trigger "' + S.trigger + '"', false); return; }
-  if (h === S.lastHash) return;
+  if (S.firstPass) {
+    // v1.1: khong nuot tin dau nua — dedupe doneHashes chong re-run
+    S.firstPass = false;
+    if (!flat.startsWith(S.trigger)) {
+      S.lastHash = h;
+      pillSet(PLATFORM + ' san sang — trigger "' + S.trigger + '"', false);
+      return;
+    }
+    // tin dau la trigger → xu ly luon (roi vong dispatchTask tu chan duplicate)
+  } else if (h === S.lastHash) {
+    return;
+  }
   S.lastHash = h;
   if (!flat.startsWith(S.trigger)) return;
   const task = flat.slice(S.trigger.length).trim();
   if (!task) return;
-  dispatchTask(task);
+  dispatchTask(task, h);
 }
 
 pillSet(PLATFORM + ' khoi dong...', false);
