@@ -280,31 +280,45 @@ function userTurnCount() {
   return 0;
 }
 
+/**
+ * Gemini đang trả lời thì nút send là nút DỪNG generation — click lúc đó
+ * KHÔNG gửi tin (đã gặp thật: kết quả goal kẹt lại trong composer).
+ * Đợi spinner ẩn rồi mới gửi. Timeout 60s rồi trả lỗi, không gửi mù.
+ */
+async function waitGeminiIdle(timeoutMs = 60000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const spinning = [...document.querySelectorAll('mat-progress-spinner, mat-spinner')]
+      .some((s) => s.offsetParent !== null && s.getBoundingClientRect().height > 0);
+    if (!spinning) return true;
+    await sleep(1000);
+  }
+  return false;
+}
+
 async function fillAndSend(text) {
   if (PLATFORM === 'gemini') {
+    // v1.8.2: Gemini đang trả lời -> nút send là nút DỪNG. Đợi idle rồi mới gửi.
+    const idle = await waitGeminiIdle();
+    if (!idle) return { ok: false, why: 'gemini-still-generating' };
     const el = document.querySelector('.ql-editor[contenteditable="true"], rich-textarea [contenteditable="true"]');
     if (!el) return { ok: false, why: 'no-editor' };
     el.focus();
     document.execCommand('selectAll', false, null);
     document.execCommand('insertText', false, text);
     await sleep(250);
+    // Chỉ tin nút send thật của Gemini — fallback regex /send|gửi/ từng trúng nút DỪNG.
     let tries = 0;
     while (tries++ < 20) {
-      const btn =
-        document.querySelector("gem-icon-button.send-button:not([aria-disabled='true'])") ||
-        [...document.querySelectorAll('button')].find((b) => {
-          if (b.disabled) return false;
-          const a = (b.getAttribute('aria-label') || '') + ' ' + (b.getAttribute('mattooltip') || '');
-          return /send|g[ửu]i/i.test(a) && b.offsetParent !== null;
-        });
+      const btn = document.querySelector("gem-icon-button.send-button:not([aria-disabled='true'])");
       if (btn) {
         const before = userTurnCount();
         btn.click();
-        // v1.8: chỉ tính send khi có receipt (user-turn tăng). Không có receipt
+        // chỉ tính send khi có receipt (user-turn tăng). Không có receipt
         // => submitted=unknown, KHÔNG gửi lại (chống gửi trùng).
         let after = before;
-        for (let i = 0; i < 12; i++) {
-          await sleep(250);
+        for (let i = 0; i < 20; i++) {
+          await sleep(500);
           after = userTurnCount();
           if (shouldSendReceipt({ before, after })) {
             ledger.sends++; saveLedger();
