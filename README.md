@@ -1,164 +1,265 @@
-# webchat-goal-bridge — Cầu nối Web-AI Chat ↔ Coding Agent qua CDP
+<div align="center">
 
-Cầu nối **zero-dependency (Node ≥ 22)** biến tab **ChatGPT / Gemini web đã đăng nhập**
-(Brave chạy qua CDP) thành **kênh giao goal cho coding agent**, với vòng lặp 2 chiều:
-việc mới vào → tạo goal → runner chạy → **kết quả + file gửi ngược lại chính chat web
-để nghiệm thu**.
+# webchat-goal-bridge (wgb)
 
-Gồm 2 phần互补:
+**Turn a logged-in ChatGPT / Gemini / Claude tab into a remote control for your
+local coding agent — and get the result posted back into the same chat for review.**
 
-| Phần | File | Vai trò |
-| :--- | :--- | :--- |
-| **wgb (integrated loop)** | `src/` — CLI `node src/cli.js` | Quản lý Brave+CDP (tắt/bật tự động, giữ phiên login), connector ChatGPT (record-first) & Gemini, goal store, runner trực tiếp (echo/exec/opencode/inbox) |
-| **file watcher (harness-agnostic)** | `gemini_cdp_watcher.mjs` + `start_*.bat` | Bridge 1 file: tin nhắn mới → `state/inbox/goal_*.json`; `outbox/reply_*.md` → tự gửi vào chat. Agent bất kỳ đọc/ghi file, không cần biết bridge |
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Node](https://img.shields.io/badge/node-%E2%89%A522-brightgreen.svg)](package.json)
+[![Dependencies](https://img.shields.io/badge/dependencies-0-success.svg)](package.json)
+[![Chat platforms](https://img.shields.io/badge/chat-ChatGPT%20%7C%20Gemini%20%7C%20Claude-black.svg)](#quick-start)
+[![PRs welcome](https://img.shields.io/badge/PRs-welcome-orange.svg)](#contributing)
 
-> **Nguồn & lịch sử:** rút ra từ cầu nối sống tại `E:\Workspace\Agents\SemanticLab\bridge\`
-> (phiên bản chạy thực, xác nhận 2 chiều trên Gemini 2026-11-21). Đã thử
-> `Ya-KARAS/AgentControlPlane` trước đó nhưng executor DSH của nó version-lock hash
-> nội bộ → tự chế cầu CDP này. Phần wgb tổng hợp cơ chế từ ~13 repo prior art
-> (xem `E:\Workspace\References\webchat-bridge-prior-art\` + draft tại
-> `E:\Workspace\Ideal\webchat-goal-bridge\PRIOR-ART.md`).
+[English](README.md) · [Tiếng Việt](README.vi.md)
 
-## Trạng thái đã kiểm chứng (2026-11-21, máy thật)
+*No API keys. No new subscriptions. The web chat you already use becomes the
+brain; a local agent becomes the hands — with a closed review loop between them.*
 
-- ✅ `brave on/off/status` — đóng nhẹ lưu session → nạp lại với `--remote-debugging-port=9222 --restore-last-session`; `off` luôn đóng port (port chỉ tạm thời).
-- ✅ ChatGPT: probe login, **đọc tin qua record API** (`/backend-api/conversation/<id>`, UI 2026 đã bỏ `data-message-author-role`), gửi tin qua `form.requestSubmit()`/nút submit, chờ reply qua `end_turn`, gửi kết quả ngược lại chat — `submitted=yes`.
-- ✅ Goal-loop e2e: `@bridge echo ...` → goal `gmwph2ovrn9yq` tạo tự động → runner chạy → kết quả `[wgb] Goal ...` xuất hiện trong đúng hội thoại ChatGPT.
-- ✅ `inbox` runner (file protocol): goal JSON ra `data/inbox/`, nhặt `reply_*.md` từ `data/outbox/` — PASS (`test/inbox-runner.test.mjs`).
-- ✅ Gemini: probe login OK (connector DOM `user-query`/`model-response`/`rich-textarea` — selector trùng với watcher đang sống).
+</div>
 
-## Kiến trúc
+<!-- ▶ Demo: drop a short GIF at docs/demo.gif and uncomment:
+<img src="docs/demo.gif" alt="wgb in action" width="720">
+-->
+
+---
+
+## Why?
+
+Frontier models in web chat — **including free tiers** — are excellent planners
+and reviewers, but they can't touch your machine. Local coding agents can
+execute, but you lose the conversation-driven loop where you (or the chat
+itself) direct, inspect and accept the work.
+
+**wgb stitches the two together:**
 
 ```
-Bạn (ChatGPT/Gemini web, tab đã đăng nhập trong Brave)
-        │  CDP :9222 (tạm thời; brave off = đóng port)
+You + web chat (the brain)  ──@bridge <task>──►  wgb  ──►  local runner (the hands)
+        ▲                                                        │
+        └────────── "[wgb] Goal <id>: <result>" ─────────────────┘
+                     posted back into the same chat for review
+```
+
+Unlike most bridges, it is **two-way with an acceptance loop**, and it was built
+around the failure modes that kill similar projects in practice: platform
+throttling, DOM drift, and reply echo-loops.
+
+## How it works
+
+```
+ You (ChatGPT / Gemini / Claude web tab, already logged in)
+        │  types:  @bridge <task>          (or @wgb via the extension)
         ▼
-┌─────────────────────────────────────────────────────────┐
-│ wgb watch --platform chatgpt|gemini                     │
-│   ① poll tin nhắn mới (record API / DOM)                │
-│   ② tin bắt đầu bằng trigger "@bridge" → tạo goal       │
-│   ③ runner: echo | exec | opencode | inbox              │
-│   ④ gửi kết quả ngược vào chat ([wgb] Goal ...: ...)    │
-└─────────────────────────────────────────────────────────┘
-        │ (runner = inbox)                    ▲
-        ▼                                     │ reply_*.md
-  data/inbox/goal_*.json ──► AGENT BẤT KỲ ────┘
-  (cùng giao thức với gemini_cdp_watcher.mjs / SemanticLab bridge)
+┌───────────────────────────────────────────────────────────┐
+│ webchat-goal-bridge                                       │
+│  ① detect new trigger message (CDP watch / extension)     │
+│  ② security gate: denylist + workspace allowlist          │
+│  ③ runner: echo │ exec │ opencode │ inbox                 │
+│  ④ type + send "[wgb] Goal <id>: <result>" back           │
+└───────────────────────────────────────────────────────────┘
+        │ (runner = inbox)                        ▲
+        ▼                                         │ reply_*.md
+  data/inbox/goal_*.json ──► ANY local agent ─────┘
 ```
 
-## Cách chạy
+Goals move through a small state machine (`queued → running → done/failed`,
+stored in `data/goals.json`), so you can inspect every run with
+`node src/cli.js goals`.
 
-### A — Vòng lặp tích hợp (wgb)
+## Requirements
 
-```powershell
-node src/cli.js brave on                        # bật Brave + CDP (tự đóng nhẹ Brave cũ)
-node src/cli.js probe --platform chatgpt        # kiểm tra login + composer
-node src/cli.js watch --platform chatgpt        # vòng lặp nhận việc (mặc định runner echo)
-# trong tab chat, gõ:  @bridge <việc cần làm>
-# tới hạn:  @bridge status
-node src/cli.js goals --short                   # xem goal store (data/goals.json)
-node src/cli.js brave off                       # xong phiên: đóng CDP, trả Brave về bình thường
+- **Node ≥ 22** (global `fetch` / `WebSocket` — zero npm dependencies, no `npm install`)
+- **Brave** (any Chromium works for the CDP flow; `brave on/off` assumes Brave by default)
+- Windows for the one-click `.bat` helpers; the core CLI is plain ESM Node and should run anywhere
+
+## Quick start
+
+### A — Integrated goal loop (CDP watch, ChatGPT / Gemini)
+
+```bash
+git clone https://github.com/kh4i-dev/webchat-goal-bridge
+cd webchat-goal-bridge
+cp config.example.json config.json      # Windows: copy config.example.json config.json
+
+node src/cli.js brave on                # relaunches Brave with a TEMPORARY CDP port, keeps your login session
+node src/cli.js probe --platform chatgpt   # verifies login + composer
+node src/cli.js watch --platform chatgpt   # starts the goal loop
 ```
 
-Chọn runner trong `config.json`:
+Then type in the chat tab:
+
+```
+@bridge list the TODOs in this repo and write them to TODO.md
+@bridge status          ← inspect running goals without spending tokens
+```
+
+When you're done: `node src/cli.js brave off` (always closes the CDP port).
+
+### B — Extension mode (adds claude.ai)
+
+The `wgb-companion` MV3 extension listens **inside the chat tabs** and dispatches
+tasks over HTTP to `wgb serve` — no CDP needed, and it works on
+chatgpt.com, gemini.google.com **and claude.ai**.
+
+1. Start the control plane: `node src/cli.js serve` → listens on `127.0.0.1:8787`
+   and auto-generates an auth token into `config.json`.
+2. Brave → `brave://extensions` → enable **Developer mode** → **Load unpacked** → select `extension/`.
+3. Open a chat tab — a `wgb` pill appears bottom-right. Paste the token from `config.json` into the popup.
+4. Type `@wgb <task>` (or `@wgb status`) in the chat. Results are typed + sent back automatically.
+
+### C — Standalone file watcher (harness-agnostic)
+
+`gemini_cdp_watcher.mjs` is a single-file bridge with a pure **file protocol**:
+new messages become `inbox/goal_*.json`, any agent that writes `outbox/reply_*.md`
+gets its reply typed + sent into the chat. Use it when your agent can't call
+HTTP or the CLI — it only needs filesystem access.
+
+## Runners
+
+Pick one in `config.json`:
 
 ```json
 { "runner": { "type": "inbox", "inbox": "data/inbox", "outbox": "data/outbox", "timeoutMs": 900000 } }
 ```
 
-- `echo` — trả lại chính task (test vòng lặp, không tốn token).
-- `exec` — chạy `cfg.runner.command` (chèn `{task}`), ví dụ chạy test/script.
-- `opencode` — gọi `opencode run "<task>"` trong `cfg.runner.cwd` (harness thật).
-- `inbox` — ghi goal JSON ra `data/inbox/`, chờ agent bất kỳ viết `reply_*.md` vào `data/outbox/`.
-
-### B — File watcher 1 file (Gemini, dùng riêng)
-
-1. **Mở Brave với CDP**: nhấn đúp `start_brave_cdp.bat` (nếu Brave đang mở sẵn KHÔNG có
-   flag, phải đóng hết trước — flag chỉ áp dụng khi process khởi động; hoặc dùng
-   `node src/cli.js brave on` để tự động hóa bước này).
-2. **Chạy watcher**: `start_watcher.bat` (hoặc `node gemini_cdp_watcher.mjs`).
-3. **Giao goal**: gõ tin nhắn trong tab khớp `--url-pattern`. Tin mới đầu tiên sau khi
-   watcher khởi động chỉ được *ghi nhớ* (chống phát nổ khi restart) — **tin thứ hai trở
-   đi** mới thành goal file. Ảnh trong tin được tải về `inbox/` kèm goal.
-4. **Nhận báo cáo**: agent viết `.md` vào `outbox/` → watcher tự gõ + Gửi → `.sent`
-   (thất bại → `.failed-<lý do>`).
-
-## CLI reference (wgb)
-
-```
-brave on|off|status     Quản lý Brave + CDP (off luôn đóng port)
-tabs [--url <substr>]   Liệt kê tab
-probe --platform <p>    Login + composer + rate-limit
-read  --platform <p>    Đọc tin (--last N) — record-first
-send  --platform <p>    Gửi 1 tin + chờ reply (--new = chat mới, --url = chọn tab)
-watch --platform <p>    Vòng goal-loop (--once, --catchup, --trigger, --url)
-goals [--short]         Goal store
-runners                 Runner có sẵn
-```
-
-Platform: `chatgpt`, `gemini`. Flags chung: `--json`, `--url <substr>`.
-
-## Protocol file (dùng chung cho cả 2 phần)
-
-| File | Ý nghĩa |
+| Runner | Behavior |
 | :--- | :--- |
-| `inbox/goal_<ts>.json` | `{id, ts, source, text, images[], tab_url}` — goal mới; xử lý xong đổi đuôi `.processed` |
-| `inbox/goal_<ts>_imgN.png` | Ảnh đính kèm (base64 decode từ dataURL) |
-| `outbox/reply_<ts>.md` | Agent muốn gửi ngược vào chat; `.sent` = đã gửi |
+| `echo` | Returns the task text — tests the full loop at zero cost |
+| `exec` | Runs `cfg.runner.command` with `{task}` substituted (scripts, test suites) |
+| `opencode` | Calls `opencode run "<task>"` inside `cfg.runner.cwd` — a real coding harness |
+| `inbox` | Writes a goal JSON to `data/inbox/`, waits for `reply_*.md` in `data/outbox/` — the harness-agnostic protocol |
+
+## CLI reference
+
+```
+brave on|off|status     Manage Brave + the CDP port (temporary; off always closes the port)
+tabs [--url <substr>]   List open Brave tabs via CDP
+probe --platform <p>    Check login + composer readiness
+read  --platform <p>    Read recent messages (--last N) — record-first on ChatGPT
+send  --platform <p>    Send one message and wait for the reply (--new, --url, --image a.png,b.png)
+watch --platform <p>    Goal loop (--once, --catchup, --trigger, --url)
+goals [--short]         Inspect the goal store
+runners                 List available runners
+serve                   HTTP control plane for the extension (127.0.0.1:8787)
+```
+
+Platforms: `chatgpt`, `gemini` (claude.ai via the extension). Global flags: `--json`, `--url <substr>`.
+
+## The file protocol
+
+Shared by the `inbox` runner and the standalone watcher:
+
+| File | Meaning |
+| :--- | :--- |
+| `inbox/goal_<ts>.json` | `{id, ts, source, text, images[], tab_url}` — a new goal; renamed to `.processed` when done |
+| `inbox/goal_<ts>_imgN.png` | Image attachments (decoded from dataURLs) |
+| `outbox/reply_<ts>.md` | The agent's report back to the chat; `.sent` = delivered, `.failed-<reason>` = not |
 | `data/goals.json` (wgb) | Goal store: `queued → running → done/failed` + result |
-| `state.json` (watcher) | Hash tin cuối + prefix reply đã gửi (chống echo) |
+| `state.json` (watcher) | Last-seen message hash + sent-reply prefixes (echo protection) |
 
-## Chống echo-loop (bài học đắt)
+## Reliability engineering
 
-Reply agent gửi vào chat **tự động trở thành "tin nhắn user mới"** ở lần poll kế —
-nếu không chặn sẽ tạo vòng lặp vô hạn goal. wgb chặn bằng: bỏ qua tin user bắt đầu
-bằng `replyPrefix` (`[wgb]`); watcher chặn bằng 2 lớp: nhớ 60 ký tự đầu mỗi reply đã
-gửi (`sentPrefixes`) + cooldown 30s sau khi gửi.
+The parts that took real damage to learn — all synthesized from prior art:
 
-## Cơ chế chống DOM-drift (tổng hợp từ prior art)
+- **Record-first, DOM-as-keyboard.** ChatGPT messages are read from
+  `/backend-api/conversation/<id>` (the 2026 UI dropped role attributes);
+  the DOM is only used to type and click.
+- **Submit receipt.** After submitting, the user-turn count **must** increase.
+  If submit status is `unknown`, wgb **never** resends — no duplicated messages.
+- **Echo-loop protection.** Bridge replies become "new user messages" on the
+  next poll; they are filtered by reply prefix (`[wgb]`), sent-prefix memory,
+  and cooldown — no infinite goal loops.
+- **Rate limits as a budget.** Event-driven capture (a form-submit listener = 0
+  requests), exactly **1 record fetch per message**, a 60 s safety-net poll,
+  an hourly ledger (40 loads / 40 sends) with auto-pause, exponential backoff
+  honoring `Retry-After`, and content dedupe. SPA-only — no full page reloads
+  (a ChatGPT reload costs ~45 backend requests vs 1 in-place).
+- **Frozen background tabs.** Background tabs get frozen by memory savers;
+  `Target.activateTarget` runs before every evaluate, or `Runtime.evaluate`
+  hangs for minutes.
+- **Language-proof submit.** The send button is matched by a multi-language
+  regex (e.g. Vietnamese "Gửi") across a submit ladder:
+  `form.requestSubmit()` → `button[type=submit]` → label match → synthetic Enter.
 
-- **Record là nguồn sự thật, DOM chỉ là bàn phím** (theo `chatgpt-use`): đọc tin/đếm
-  turn/xong-turn từ `/backend-api/conversation/<id>` (bearer cache 5 phút trong
-  `window.__wgbTok`); DOM chỉ dùng khi chưa có conversation id.
-- **Composer**: không bao giờ `innerHTML`; focus + `selectAll` + `execCommand('insertText')`
-  từng khúc ≤1500 ký tự + fingerprint trước submit (đoạn đa dòng không bị chẻ).
-- **Submit ladder**: `form.requestSubmit()` → `button[type=submit]` → nút có label
-  send đa ngôn ngữ (UI 2026 bỏ `data-testid="send-button"`, label tiếng Việt "Gửi")
-  → Enter synthetic. Sau submit **phải có receipt** (số user-turn tăng qua record);
-  `submitted=unknown` thì KHÔNG BAO GIỜ tự gửi lại.
-- **Tab nền bị freeze**: `Target.activateTarget` trước khi attach/evaluate, nếu không
-  `Runtime.evaluate` treo tới khi tab được rã đông.
+## Security
 
-## Điểm hỏng thường gặp
+- **Task gate.** A denylist (disk wipes, shutdown, registry edits, credential
+  paths…) blocks dangerous tasks **before** any runner runs. Negation words are
+  stripped first, so *"do not run rm -rf"* can't whitelist itself.
+- **Workspace allowlist.** Runner working directories must stay inside
+  `runner.allowedRoots` — paths from chat are never trusted.
+- **Token-authed control plane.** `wgb serve` generates a token in `config.json`;
+  the extension must present it.
+- **Audit trail.** Every dispatch and every gate block is appended to `data/events.jsonl`.
+- **CDP reality check.** Port `9222` lets **any local process** control the whole
+  browser — personal machines only, `brave off` when done, and don't browse
+  untrusted sites while it's on.
+- **Terms of service.** Automating a web UI may violate a platform's terms.
+  Keep pacing slow, keep the trigger opt-in (`@bridge`), stop on rate limits.
+  You are responsible for how you use this.
 
-| Triệu chứng | Nguyên nhân / cách xử lý |
+## Status
+
+| Capability | Status |
 | :--- | :--- |
-| `fetch failed` / `ECONNREFUSED 9222` | Brave không mở bằng flag CDP → `node src/cli.js brave on` |
-| Lệnh treo 1-3 phút rồi mới xong | Tab đang nền bị freeze → đã tự `activate`; nếu vẫn chậm, click tab 1 lần |
-| `ambiguous-editors` / `no-editor` | ChatGPT đổi composer → sửa `COMPOSER_SELECTOR` trong `src/connectors/chatgpt.js` |
-| `DOM pattern lạ — dump` (watcher) | Trang đổi cấu trúc → xem `debug/dom_snapshot.txt`, sửa `EXTRACT_JS` |
-| `send_button_not_found` | Nút Gửi đổi label → sửa regex trong `SEND_JS` / `exprSubmit` |
-| Goal file sinh với NỘI DUNG reply của mình | Echo chưa chặn hết → kiểm tra `replyPrefix` / `sentPrefixes` trong state |
+| ChatGPT two-way (record API + submit ladder + replies) | ✅ verified end-to-end on a real machine |
+| Gemini two-way (DOM connector) | ✅ verified on a live bridge |
+| Claude via extension (DOM) | 🟡 best-effort — claude.ai DOM changes often; not fully tested |
+| `exec` / `opencode` runners on Windows | ✅ |
+| macOS / Linux | ❔ untested — core is plain Node ESM; `brave` helper + `.bat` files are Windows-specific |
 
-## Bảo mật
+Run the test suites (zero dependencies, `node:test`):
 
-- CDP `:9222` cho phép **mọi process local** điều khiển toàn bộ browser — chỉ bật trên
-  máy cá nhân; `brave off` (hoặc đóng Brave) khi không dùng. Không chạy port này khi
-  duyệt web không tin cậy cùng lúc.
-- Bridge không đọc/ghi cookie, không đăng nhập hộ — mọi thứ diễn ra trong phiên đăng
-  nhập sẵn của bạn. Tự động hóa giao diện web có thể chạm điều khoản dịch vụ của nền
-  tảng: giữ tốc độ chậm (poll ≥ 8s), opt-in bằng trigger `@bridge`, dừng khi bị rate-limit.
+```bash
+npm test
+```
+
+## FAQ
+
+**Do I need an API key?**
+No. wgb uses the chat tab you're already logged into — free tiers work.
+
+**Which models does it support?**
+Whatever is in your tab. ChatGPT and Gemini are verified; claude.ai works through
+the extension (best-effort).
+
+**Why not just use the official APIs?**
+You can — this exists for a different loop: letting the *web chat itself*
+(including free tiers, with your context and history) direct local work, review
+the result in the same conversation, and iterate until it's accepted.
+
+**Is this Windows-only?**
+The core CLI is plain Node ≥ 22. Verified on Windows 11 + Brave; the `brave
+on/off` helper and `.bat` launchers assume Windows, other platforms are untested.
 
 ## Roadmap
 
-- [ ] P1: throttle file + pace ledger (5/15/30 phút escalation — theo `chatgpt-use`); ACK/NACK read-back cho kết quả; upload file nghiệm thu; Gemini qua record `batchexecute`.
-- [ ] P2: map goal store ↔ goal MCP của harness (`.claude/goal/goal_state.json`); multi-project routing `#slug`; nhiều instance song song (mỗi nền tảng 1 watcher, tách `--inbox/--outbox/--state`).
-- [ ] Ý tưởng: webui nhỏ xem goal + nghiệm thu 1 nút (accept / changes-requested).
+- [ ] Pacing ledger for the standalone watcher; ACK/NACK read-back for results
+- [ ] File upload for acceptance flows; Gemini via `batchexecute`
+- [ ] Map the goal store to harness goal state (e.g. `.claude/goal/goal_state.json`)
+- [ ] Multi-project routing (`#slug`) and parallel instances (per-platform inbox/outbox/state)
+- [ ] Tiny web UI: view goals, one-click accept / changes-requested
 
-## Credits
+## Contributing
 
-Tổng hợp cơ chế từ: `chatgpt-use`, `aegisloop`, `auto-chat`, `AgentControlPlane`,
+Issues and PRs are welcome! Keep the zero-dependency constraint (Node stdlib
+only) — it's a feature. Run `npm test` before submitting.
+
+## Acknowledgments
+
+wgb distills hard-won mechanisms from ~13 open-source prior-art projects:
+`chatgpt-use`, `aegisloop`, `auto-chat`, `AgentControlPlane`,
 `OLmatter-chatgpt-bridge`, `DrA1ex-chatgpt-bridge`, `codex-chatgpt-control`,
-`agentify/desktop`, `OpenBrowser`, `Gemini-API`, `uniqlaw`, `agent-anywhere`, `AgEnD`
-(clone tại `E:\Workspace\References\webchat-bridge-prior-art\`). Cầu sống gốc:
-`E:\Workspace\Agents\SemanticLab\bridge\`.
+`agentify/desktop`, `OpenBrowser`, `Gemini-API`, `uniqlaw`, `agent-anywhere`, `AgEnD`.
+
+## License
+
+[MIT](LICENSE)
+
+---
+
+<div align="center">
+
+If wgb saves you a few round-trips between tabs, a ⭐ helps others find it.
+
+</div>
