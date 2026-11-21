@@ -1,7 +1,13 @@
-// wgb-companion content script — chat web là NÃO chỉ đạo, agent local là TAY CHÂN.
-// Vòng: thấy tin user moi bat dau bang trigger (@wgb) -> POST /dispatch ->
-//       poll GET /goals/<id> -> done -> dien "[wgb] ..." vao composer + Send -> NAO duyet.
-// Selector: chuan hoa tu wgb connectors (da thu that tren UI 2026) + gemini_cdp_watcher.
+// wgb-companion v1.2 — chat web là NÃO chỉ đạo, agent local là TAY CHÂN.
+//
+// Chống rate-limit (429) — nguyên tắc "1 request / 1 tin nhắn":
+//  * ChatGPT (UI 2026 không còn DOM role): KHÔNG poll record API. Nghe sự kiện
+//    submit của form composer (MutationObserver-free, 0 request) → sau 2.5s đọc
+//    record ĐÚNG 1 LẦN để lấy nội dung tin. Safety-net poll 60s/lần.
+//  * Gemini + Claude: đọc DOM thuần (user-query / user-message) — 0 request.
+//  * Budget ledger theo giờ (chatgpt-use: ~15 loads/40 sends): vượt ngưỡng → nghỉ.
+//  * Backoff 429/limit: 60s → 120s → ... tối đa 5 phút; honor Retry-After nếu có.
+//  * Dedupe nội dung (aegisloop): task trùng không chạy lại → gõ 1 lần là chạy.
 
 const DEFAULTS = {
   serverUrl: 'http://127.0.0.1:8787',
@@ -9,10 +15,12 @@ const DEFAULTS = {
   replyPrefix: '[wgb]',
   autoSend: true,
   pollMs: 3000,
-  recordPollMs: 15000,
+  safetyPollMs: 60000,
   goalTimeoutMs: 900000,
   enabled: true
 };
+
+const BUDGET = { recordFetch: 40, sends: 40 }; // mỗi giờ — chatgpt-use pace ledger
 
 const S = { ...DEFAULTS, lastHash: null, busyGoalId: null, lastSendTs: 0, firstPass: true };
 chrome.storage.sync.get(DEFAULTS, (s) => Object.assign(S, s));
@@ -20,14 +28,26 @@ chrome.storage.onChanged.addListener((ch) => {
   for (const [k, v] of Object.entries(ch)) S[k] = v.newValue;
 });
 
-// Dedupe theo noi dung (aegisloop hashPayload): task da dispatch bao gio thi bo qua —
-// cho phep xu ly ngay tin dau tien sau khi load ma khong so re-run.
+// Dedupe theo nội dung (aegisloop hashPayload + executedHashes)
 let doneHashes = [];
 chrome.storage.local.get({ doneHashes: [] }, (s) => { doneHashes = s.doneHashes || []; });
 function rememberDone(h) {
   doneHashes.push(h);
   if (doneHashes.length > 100) doneHashes.shift();
   chrome.storage.local.set({ doneHashes });
+}
+
+// Budget ledger theo giờ
+let ledger = { hour: new Date().getHours(), recordFetch: 0, sends: 0 };
+chrome.storage.local.get({ ledger: null }, (s) => { if (s.ledger) ledger = s.ledger; });
+function rollLedger() {
+  const h = new Date().getHours();
+  if (ledger.hour !== h) { ledger = { hour: h, recordFetch: 0, sends: 0 }; }
+}
+function saveLedger() { chrome.storage.local.set({ ledger }); }
+function overBudget() {
+  rollLedger();
+  return ledger.recordFetch >= BUDGET.recordFetch || ledger.sends >= BUDGET.sends;
 }
 
 const HOST = location.host;
@@ -46,6 +66,8 @@ let wgbTok = null;
 let lastRecordFetch = 0;
 let rateLimitedUntil = 0;
 let rateLimitStreak = 0;
+let pendingSubmitReadAt = 0; // chatgpt: submit xong → doc record 1 lan
+
 async function bearer() {
   if (wgbTok && Date.now() - wgbTok.ts < 5 * 60 * 1000) return wgbTok.v;
   const s = await fetch('/api/auth/session').then((r) => r.json()).catch(() => null);
@@ -54,17 +76,27 @@ async function bearer() {
   return wgbTok.v;
 }
 
-// Bài học throttle (chatgpt-use): record fetch là 1 request nhưng poll 3s = ~1200/h
-// → tự gây "temporary limit". v1.1: giữ nhịp recordPollMs (mặc định 15s) + backoff
-// luỹ thừa 60s→120s→...→max 5 phút khi bị limit, reset khi thành công.
-async function readLastUserChatGPT() {
+function backoffFromResponse(res) {
+  const retryAfter = Number(res.headers.get('retry-after') || 0);
+  if (retryAfter > 0) {
+    rateLimitedUntil = Date.now() + Math.min(600000, retryAfter * 1000);
+  } else {
+    rateLimitStreak++;
+    const waitMs = Math.min(300000, 60000 * rateLimitStreak);
+    rateLimitedUntil = Date.now() + waitMs;
+  }
+  const waitSec = Math.max(0, Math.round((rateLimitedUntil - Date.now()) / 1000));
+  pillSet('ChatGPT rate limit — nghi ' + waitSec + 's (tin cu khong mat)', false);
+}
+
+async function readRecordLastUser() {
   if (Date.now() < rateLimitedUntil) return null;
-  if (Date.now() - lastRecordFetch < S.recordPollMs) return null;
-  lastRecordFetch = Date.now();
   const convId = (location.pathname.match(/\/c\/([0-9a-f-]{36})/) || [])[1];
   if (!convId) return null;
   const tok = await bearer();
   if (!tok) return null;
+  lastRecordFetch = Date.now();
+  ledger.recordFetch++; saveLedger();
   let res = null;
   try {
     res = await fetch('/backend-api/conversation/' + convId, {
@@ -73,17 +105,10 @@ async function readLastUserChatGPT() {
   } catch {
     return null;
   }
-  if (!res.ok) {
-    rateLimitStreak++;
-    const waitMs = Math.min(300000, 60000 * rateLimitStreak);
-    rateLimitedUntil = Date.now() + waitMs;
-    pillSet('ChatGPT rate limit — nghi ' + Math.round(waitMs / 1000) + 's (tin cu khong mat)', false);
-    return null;
-  }
+  if (!res.ok) { backoffFromResponse(res); return null; }
   const rec = await res.json().catch(() => null);
   if (!rec || !rec.mapping) return null;
-  rateLimitStreak = 0;
-  rateLimitedUntil = 0;
+  rateLimitStreak = 0; rateLimitedUntil = 0;
   let node = rec.mapping[rec.current_node];
   const chain = [];
   while (node) { chain.unshift(node); node = rec.mapping[node.parent]; }
@@ -103,13 +128,27 @@ function readLastUserGemini() {
 }
 
 function readLastUserClaude() {
-  const els = document.querySelectorAll('[data-testid="user-message"]');
+  const els = document.querySelectorAll('[data-testid="user-message"], .font-user-message');
   const el = els[els.length - 1];
   return el ? (el.innerText || '').trim() || null : null;
 }
 
+function shouldReadRecord() {
+  if (Date.now() < rateLimitedUntil) return false;
+  if (overBudget()) return false;
+  if (pendingSubmitReadAt && Date.now() >= pendingSubmitReadAt) {
+    pendingSubmitReadAt = 0;
+    return true;
+  }
+  if (Date.now() - lastRecordFetch >= S.safetyPollMs) return true;
+  return false;
+}
+
 function readLastUser() {
-  if (PLATFORM === 'chatgpt') return readLastUserChatGPT();
+  if (PLATFORM === 'chatgpt') {
+    if (!shouldReadRecord()) return Promise.resolve(null);
+    return readRecordLastUser();
+  }
   if (PLATFORM === 'gemini') return Promise.resolve(readLastUserGemini());
   return Promise.resolve(readLastUserClaude());
 }
@@ -123,6 +162,7 @@ const CHATGPT_COMPOSER =
   'form [data-composer-markdown][contenteditable="true"][role="textbox"]';
 
 async function fillAndSend(text) {
+  ledger.sends++; saveLedger();
   if (PLATFORM === 'gemini') {
     const el = document.querySelector('.ql-editor[contenteditable="true"], rich-textarea [contenteditable="true"]');
     if (!el) return { ok: false, why: 'no-editor' };
@@ -155,6 +195,12 @@ async function fillAndSend(text) {
   document.execCommand('selectAll', false, null);
   document.execCommand('insertText', false, text);
   await sleep(250);
+  if (PLATFORM === 'claude') {
+    const btn = [...document.querySelectorAll('button')].find(
+      (b) => /send/i.test(b.getAttribute('aria-label') || '') && b.offsetParent !== null && !b.disabled
+    );
+    if (btn) { btn.click(); return { ok: true, via: 'claude-send-btn' }; }
+  }
   const form = el.closest('form');
   if (form) {
     const sub = form.querySelector('button[type="submit"]');
@@ -186,7 +232,7 @@ function pillSet(text, busy) {
   p.style.background = busy ? '#1d4ed8' : '#111827';
 }
 
-// ---------- vong chinh ----------
+// ---------- relay ----------
 
 function relay(msg) {
   return new Promise((resolve) => {
@@ -199,6 +245,10 @@ function relay(msg) {
 async function dispatchTask(task, contentHash) {
   if (doneHashes.includes(contentHash)) {
     pillSet('task nay da xu ly truoc — doi y khac', false);
+    return;
+  }
+  if (overBudget()) {
+    pillSet('vuot budget gio (' + ledger.recordFetch + ' fetch/' + ledger.sends + ' send) — nghi den gio sau', false);
     return;
   }
   S.busyGoalId = 'pending';
@@ -231,7 +281,7 @@ async function dispatchTask(task, contentHash) {
         pillSet('goal ' + goalId + ' ' + g.status + ' (autoSend tat)', false);
       }
       S.busyGoalId = null;
-      S.lastHash = null; // doc lai tin moi (bao gom ket qua) o vong sau
+      S.lastHash = null;
       return;
     }
   }
@@ -249,14 +299,12 @@ async function tick() {
   if (Date.now() - S.lastSendTs < 20000) return;                 // cooldown
   const h = hash(flat);
   if (S.firstPass) {
-    // v1.1: khong nuot tin dau nua — dedupe doneHashes chong re-run
     S.firstPass = false;
     if (!flat.startsWith(S.trigger)) {
       S.lastHash = h;
-      pillSet(PLATFORM + ' san sang — trigger "' + S.trigger + '"', false);
+      pillSet(PLATFORM + ' san sang — trigger "' + S.trigger + '" (1 request/tin)', false);
       return;
     }
-    // tin dau la trigger → xu ly luon (roi vong dispatchTask tu chan duplicate)
   } else if (h === S.lastHash) {
     return;
   }
@@ -267,5 +315,17 @@ async function tick() {
   dispatchTask(task, h);
 }
 
-pillSet(PLATFORM + ' khoi dong...', false);
-setInterval(tick, 3000);
+// ChatGPT: nghe submit cua form composer — khong ton request. Submit xong 2.5s
+// thi doc record dung 1 lan de lay noi dung tin (neu la trigger thi dispatch).
+document.addEventListener(
+  'submit',
+  (e) => {
+    if (PLATFORM === 'chatgpt' && e.target && e.target.matches('form')) {
+      pendingSubmitReadAt = Date.now() + 2500;
+    }
+  },
+  true
+);
+
+pillSet(PLATFORM + ' khoi dong... (v1.2, 1 request/tin)', false);
+setInterval(tick, S.pollMs);

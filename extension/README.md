@@ -46,5 +46,22 @@ preventing this chat from loading" (ChatGPT throttle). v1.1 sửa theo chuẩn
    không dispatch lại — cho phép xử lý **ngay tin đầu tiên** sau khi load (hết cảnh
    "tin đầu bị nuốt" của v1.0).
 
+## v1.2 — "1 request / 1 tin nhắn" + Claude
+
+- **ChatGPT: event-driven, không poll API.** Nghe sự kiện `submit` của form composer
+  (0 request) → 2.5s sau đọc record ĐÚNG 1 LẦN để lấy nội dung tin. Safety-net poll
+  60s/lần chỉ để bắt tin ngoài (gần như không xảy ra trong dụng thức này).
+- **Gemini + Claude: đọc DOM thuần** (`user-query` / `[data-testid="user-message"]`)
+  — 0 request network. Gemini đã verify qua cầu sống SemanticLab; Claude best-effort
+  (chưa test — claude.ai đổi DOM thường xuyên).
+- **Budget ledger theo giờ** (chrome.storage.local): vượt 40 record-fetch hoặc 40
+  send/giờ → pill cảnh báo + tạm dừng đến giờ sau (ngưỡng theo pace ledger của
+  `chatgpt-use`).
+- **Honor `Retry-After`** khi server trả về, thay vì chỉ backoff cứng.
+
+Bảng ne 429 tổng hợp: pacing (1 req/tin) → budget giờ → backoff + Retry-After →
+dedupe chống re-run → không bao giờ full-navigate (SPA-only, tiết kiệm 45
+request/lần theo đo của chatgpt-use).
+
 Sau khi sửa file: `brave://extensions` → nạp lại (icon refresh trên card
 wgb-companion) → reload các tab chat.
