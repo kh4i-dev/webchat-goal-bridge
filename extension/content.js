@@ -62,6 +62,52 @@ async function clearSharedLimit() {
   rateLimitStreak = 0;
 }
 
+// Ladder cooldown (chatgpt-use throttle.rs): hits cách nhau >1h restart ladder;
+// monotonic until — hit lặp lại KHÔNG BAO GIỜ rút ngắn cooldown đang chạy.
+const LADDER_MS = [60000, 300000, 900000, 1800000]; // 1p → 5p → 15p → 30p
+let limitHits = null;
+chrome.storage.local.get({ limitHits: null }, (s) => { limitHits = s.limitHits; });
+
+async function noteLimitHit(minWaitMs, reason) {
+  const now = Date.now();
+  if (!limitHits || now - limitHits.lastHit > 3600000) limitHits = { lastHit: now, hits: 1 };
+  else limitHits.hits++;
+  await chrome.storage.local.set({ limitHits });
+  const step = LADDER_MS[Math.min(limitHits.hits - 1, LADDER_MS.length - 1)];
+  const until = Math.max(now + step, now + minWaitMs, rateLimitedUntil);
+  await setSharedLimit(until - now, reason);
+}
+
+// Regex đa ngôn ngữ (chatgpt-use channel.rs:384 — tiếng Anh-only từng đọc nhầm trang
+// zh-CN đang throttle là "healthy" và poll tiếp vào throttle)
+const LIMIT_DIALOG_RE =
+  /too many requests|requests too quickly|a temporary limit|gi[ớo]i h[ạa]n t[ạa]m th[ời]|太多请求|过于频繁|リクエストが多すぎ|요청이 너무 많|लिमिट/i;
+let dialogHitNoted = 0;
+function checkLimitDialog() {
+  if (Date.now() - dialogHitNoted < 120000) return;
+  const texts = [...document.querySelectorAll('[role="dialog"], [role="alert"], [aria-live="assertive"]')]
+    .filter((el) => el.offsetParent !== null)
+    .map((el) => el.innerText || '')
+    .join(' ');
+  if (!LIMIT_DIALOG_RE.test(texts)) return;
+  dialogHitNoted = Date.now();
+  noteLimitHit(0, PLATFORM + ' dialog limit');
+  const btn = [...document.querySelectorAll('[role="dialog"] button, [role="alertdialog"] button')].find((b) =>
+    /got it|ok|đóng|close|知道了|了解/i.test(b.innerText || '')
+  );
+  if (btn) btn.click(); // dismiss (chatgpt-use channel.rs:731)
+}
+
+// Chờ trong turn (chatgpt-use channel.rs:2770): throttle nằm ở conversations API,
+// không phải generation — sau mỗi lần chờ, hỏi server xem reply xong chưa.
+const IN_TURN_WAIT = [20000, 45000, 90000];
+let inTurnIdx = 0;
+function inTurnBackoffMs() {
+  const ms = IN_TURN_WAIT[Math.min(inTurnIdx, IN_TURN_WAIT.length - 1)];
+  inTurnIdx++;
+  return ms;
+}
+
 const HOST = location.host;
 const PLATFORM = HOST.includes('chatgpt') ? 'chatgpt' : HOST.includes('gemini') ? 'gemini' : 'claude';
 
@@ -90,13 +136,9 @@ async function bearer() {
 
 async function backoffFromResponse(res) {
   const retryAfter = Number(res.headers.get('retry-after') || 0);
-  let waitMs;
-  if (retryAfter > 0) waitMs = Math.min(600000, retryAfter * 1000);
-  else {
-    rateLimitStreak++;
-    waitMs = Math.min(300000, 60000 * rateLimitStreak);
-  }
-  await setSharedLimit(waitMs, PLATFORM + ' 429');
+  // Stated (Retry-After) luôn thắng guessed (agent-anywhere): clamp riêng 10 phút
+  const statedMs = retryAfter > 0 ? Math.min(600000, retryAfter * 1000) : 0;
+  await noteLimitHit(statedMs, PLATFORM + ' 429');
 }
 
 async function readRecordLastUser() {
@@ -453,6 +495,7 @@ async function dispatchTask(task, contentHash) {
 
 async function tick() {
   if (!S.enabled || S.busyGoalId || S.dead) return;
+  checkLimitDialog();
   let lastUser = null;
   try { lastUser = await readLastUser(); } catch { return; }
   if (!lastUser) return;
@@ -486,6 +529,12 @@ document.addEventListener(
   },
   true
 );
+
+// Visibility resurrection (OLmatter user.js:426): tab quay lại hiển thị → đọc record
+// 1 lần để bắt kịp tin mới trong lúc tab bị nền (không spam: chỉ 1 request/lần kích hoạt)
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && PLATFORM === 'chatgpt') lastRecordFetch = 0;
+});
 
 pillSet(PLATFORM + ' khoi dong... (v' + VERSION + ')', false);
 setInterval(tick, S.pollMs);
