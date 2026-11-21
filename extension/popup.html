@@ -3,28 +3,46 @@
 <head>
   <meta charset="utf-8" />
   <style>
-    body { font: 13px system-ui, sans-serif; width: 300px; margin: 0; padding: 12px; background: #111827; color: #e5e7eb; }
-    h1 { font-size: 14px; margin: 0 0 10px; }
+    body { font: 12px system-ui, sans-serif; width: 330px; margin: 0; padding: 12px; background: #111827; color: #e5e7eb; }
+    h1 { font-size: 14px; margin: 0 0 2px; display: flex; justify-content: space-between; align-items: center; }
+    h1 .ver { color: #6b7280; font-weight: normal; font-size: 11px; }
+    .sub { color: #6b7280; font-size: 11px; margin-bottom: 8px; }
     label { display: block; margin-top: 8px; font-size: 11px; color: #9ca3af; }
     input { width: 100%; box-sizing: border-box; margin-top: 2px; padding: 5px 7px; border-radius: 6px; border: 1px solid #374151; background: #1f2937; color: #e5e7eb; }
-    button { margin-top: 10px; width: 100%; padding: 7px; border: 0; border-radius: 6px; background: #2563eb; color: #fff; cursor: pointer; }
+    button { margin-top: 8px; width: 100%; padding: 7px; border: 0; border-radius: 6px; background: #2563eb; color: #fff; cursor: pointer; }
     button.alt { background: #374151; }
     #status { margin-top: 8px; font-size: 11px; min-height: 16px; color: #93c5fd; }
-    .row { display: flex; gap: 6px; align-items: center; margin-top: 8px; }
+    .row { display: flex; gap: 6px; align-items: center; margin-top: 6px; }
     .row input { width: auto; }
+    .card { background: #1f2937; border-radius: 8px; padding: 8px 10px; margin-top: 10px; }
+    .card .t { color: #9ca3af; font-size: 11px; margin-bottom: 4px; }
+    .bar { height: 5px; background: #374151; border-radius: 3px; overflow: hidden; margin-top: 3px; }
+    .bar > div { height: 5px; border-radius: 3px; }
+    .gline { font-size: 11px; margin: 3px 0; color: #d1d5db; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .ok { color: #4ade80; } .bad { color: #f87171; } .warn { color: #fbbf24; }
   </style>
 </head>
 <body>
-  <h1>wgb-companion</h1>
-  <label>Server (wgb serve)</label>
-  <input id="serverUrl" />
-  <label>Token (nếu có)</label>
-  <input id="token" />
-  <label>Trigger</label>
-  <input id="trigger" />
+  <h1>wgb-companion <span class="ver" id="ver"></span></h1>
+  <div class="sub">chat web = NÃO chỉ đạo · agent local = tay chân</div>
+
+  <div class="card" id="serverCard"><div class="t">SERVER</div><div id="serverInfo">đang kiểm tra...</div></div>
+  <div class="card">
+    <div class="t">BUDGET GIỜ NÀY</div>
+    <div class="gline">Record fetch: <span id="bFetch">0/40</span></div>
+    <div class="bar"><div id="barFetch" style="width:0%;background:#60a5fa"></div></div>
+    <div class="gline" style="margin-top:6px">Send: <span id="bSend">0/40</span></div>
+    <div class="bar"><div id="barSend" style="width:0%;background:#60a5fa"></div></div>
+    <div class="gline" style="margin-top:6px">Rate limit: <span id="limitInfo" class="ok">OK</span></div>
+  </div>
+  <div class="card"><div class="t">GOALS GẦN NHẤT</div><div id="goals">(đang tải...)</div></div>
+
+  <label>Server (wgb serve)</label><input id="serverUrl" />
+  <label>Token</label><input id="token" />
+  <label>Trigger</label><input id="trigger" />
   <div class="row"><input type="checkbox" id="enabled" /> <span>Bật content script</span></div>
   <div class="row"><input type="checkbox" id="autoSend" /> <span>Tự gửi kết quả vào chat</span></div>
-  <button id="save">Lưu</button>
+  <button id="save">Lưu cấu hình</button>
   <button id="test" class="alt">Test kết nối</button>
   <div id="status"></div>
   <script src="popup.js"></script>

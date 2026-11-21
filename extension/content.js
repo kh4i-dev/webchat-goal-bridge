@@ -1,13 +1,14 @@
-// wgb-companion v1.2 — chat web là NÃO chỉ đạo, agent local là TAY CHÂN.
+// wgb-companion v1.3 — chat web là NÃO chỉ đạo, agent local là TAY CHÂN.
 //
-// Chống rate-limit (429) — nguyên tắc "1 request / 1 tin nhắn":
-//  * ChatGPT (UI 2026 không còn DOM role): KHÔNG poll record API. Nghe sự kiện
-//    submit của form composer (MutationObserver-free, 0 request) → sau 2.5s đọc
-//    record ĐÚNG 1 LẦN để lấy nội dung tin. Safety-net poll 60s/lần.
-//  * Gemini + Claude: đọc DOM thuần (user-query / user-message) — 0 request.
-//  * Budget ledger theo giờ (chatgpt-use: ~15 loads/40 sends): vượt ngưỡng → nghỉ.
-//  * Backoff 429/limit: 60s → 120s → ... tối đa 5 phút; honor Retry-After nếu có.
-//  * Dedupe nội dung (aegisloop): task trùng không chạy lại → gõ 1 lần là chạy.
+// Chống rate-limit (429) — "1 request / 1 tin nhắn":
+//  * ChatGPT: nghe submit form (0 request) → 2.5s sau đọc record 1 lần; safety-net 60s.
+//  * Gemini + Claude: DOM thuần, 0 request.
+//  * SHARED throttle chéo tab (storage.local): 1 tab dính limit → mọi tab cùng nghỉ
+//    (tương đương machine-wide throttle file của chatgpt-use).
+//  * Budget ledger theo giờ (40 fetch / 40 send) + backoff luỹ thừa + Retry-After.
+//  * Dedupe nội dung (aegisloop): task trùng không chạy lại.
+//
+// UI: pill góc phải — click để mở panel (server, budget, rate-limit, goals gần nhất).
 
 const DEFAULTS = {
   serverUrl: 'http://127.0.0.1:8787',
@@ -20,15 +21,15 @@ const DEFAULTS = {
   enabled: true
 };
 
-const BUDGET = { recordFetch: 40, sends: 40 }; // mỗi giờ — chatgpt-use pace ledger
+const BUDGET = { recordFetch: 40, sends: 40 };
+const VERSION = '1.3.0';
 
-const S = { ...DEFAULTS, lastHash: null, busyGoalId: null, lastSendTs: 0, firstPass: true };
+const S = { ...DEFAULTS, lastHash: null, busyGoalId: null, lastSendTs: 0, firstPass: true, dead: false };
 chrome.storage.sync.get(DEFAULTS, (s) => Object.assign(S, s));
 chrome.storage.onChanged.addListener((ch) => {
-  for (const [k, v] of Object.entries(ch)) S[k] = v.newValue;
+  for (const [k, v] of Object.entries(ch)) if (k in S) S[k] = v.newValue;
 });
 
-// Dedupe theo nội dung (aegisloop hashPayload + executedHashes)
 let doneHashes = [];
 chrome.storage.local.get({ doneHashes: [] }, (s) => { doneHashes = s.doneHashes || []; });
 function rememberDone(h) {
@@ -37,17 +38,28 @@ function rememberDone(h) {
   chrome.storage.local.set({ doneHashes });
 }
 
-// Budget ledger theo giờ
 let ledger = { hour: new Date().getHours(), recordFetch: 0, sends: 0 };
 chrome.storage.local.get({ ledger: null }, (s) => { if (s.ledger) ledger = s.ledger; });
 function rollLedger() {
   const h = new Date().getHours();
-  if (ledger.hour !== h) { ledger = { hour: h, recordFetch: 0, sends: 0 }; }
+  if (ledger.hour !== h) ledger = { hour: h, recordFetch: 0, sends: 0 };
 }
-function saveLedger() { chrome.storage.local.set({ ledger }); }
-function overBudget() {
-  rollLedger();
-  return ledger.recordFetch >= BUDGET.recordFetch || ledger.sends >= BUDGET.sends;
+function saveLedger() { rollLedger(); chrome.storage.local.set({ ledger }); }
+function overBudget() { rollLedger(); return ledger.recordFetch >= BUDGET.recordFetch || ledger.sends >= BUDGET.sends; }
+
+// Shared throttle chéo tab — một tab dính limit, tất cả tab cùng nghỉ.
+async function getSharedLimit() {
+  const s = await chrome.storage.local.get({ sharedLimit: { until: 0, reason: '' } });
+  return s.sharedLimit && s.sharedLimit.until > Date.now() ? s.sharedLimit : null;
+}
+async function setSharedLimit(waitMs, reason) {
+  await chrome.storage.local.set({ sharedLimit: { until: Date.now() + waitMs, reason } });
+  rateLimitedUntil = Date.now() + waitMs;
+}
+async function clearSharedLimit() {
+  await chrome.storage.local.set({ sharedLimit: { until: 0, reason: '' } });
+  rateLimitedUntil = 0;
+  rateLimitStreak = 0;
 }
 
 const HOST = location.host;
@@ -66,7 +78,7 @@ let wgbTok = null;
 let lastRecordFetch = 0;
 let rateLimitedUntil = 0;
 let rateLimitStreak = 0;
-let pendingSubmitReadAt = 0; // chatgpt: submit xong → doc record 1 lan
+let pendingSubmitReadAt = 0;
 
 async function bearer() {
   if (wgbTok && Date.now() - wgbTok.ts < 5 * 60 * 1000) return wgbTok.v;
@@ -76,21 +88,21 @@ async function bearer() {
   return wgbTok.v;
 }
 
-function backoffFromResponse(res) {
+async function backoffFromResponse(res) {
   const retryAfter = Number(res.headers.get('retry-after') || 0);
-  if (retryAfter > 0) {
-    rateLimitedUntil = Date.now() + Math.min(600000, retryAfter * 1000);
-  } else {
+  let waitMs;
+  if (retryAfter > 0) waitMs = Math.min(600000, retryAfter * 1000);
+  else {
     rateLimitStreak++;
-    const waitMs = Math.min(300000, 60000 * rateLimitStreak);
-    rateLimitedUntil = Date.now() + waitMs;
+    waitMs = Math.min(300000, 60000 * rateLimitStreak);
   }
-  const waitSec = Math.max(0, Math.round((rateLimitedUntil - Date.now()) / 1000));
-  pillSet('ChatGPT rate limit — nghi ' + waitSec + 's (tin cu khong mat)', false);
+  await setSharedLimit(waitMs, PLATFORM + ' 429');
 }
 
 async function readRecordLastUser() {
-  if (Date.now() < rateLimitedUntil) return null;
+  const shared = await getSharedLimit();
+  if (shared) { rateLimitedUntil = shared.until; return null; }
+  if (overBudget()) return null;
   const convId = (location.pathname.match(/\/c\/([0-9a-f-]{36})/) || [])[1];
   if (!convId) return null;
   const tok = await bearer();
@@ -105,10 +117,10 @@ async function readRecordLastUser() {
   } catch {
     return null;
   }
-  if (!res.ok) { backoffFromResponse(res); return null; }
+  if (!res.ok) { await backoffFromResponse(res); return null; }
   const rec = await res.json().catch(() => null);
   if (!rec || !rec.mapping) return null;
-  rateLimitStreak = 0; rateLimitedUntil = 0;
+  if (rateLimitedUntil) await clearSharedLimit();
   let node = rec.mapping[rec.current_node];
   const chain = [];
   while (node) { chain.unshift(node); node = rec.mapping[node.parent]; }
@@ -144,13 +156,13 @@ function shouldReadRecord() {
   return false;
 }
 
-function readLastUser() {
+async function readLastUser() {
   if (PLATFORM === 'chatgpt') {
-    if (!shouldReadRecord()) return Promise.resolve(null);
+    if (!shouldReadRecord()) return null;
     return readRecordLastUser();
   }
-  if (PLATFORM === 'gemini') return Promise.resolve(readLastUserGemini());
-  return Promise.resolve(readLastUserClaude());
+  if (PLATFORM === 'gemini') return readLastUserGemini();
+  return readLastUserClaude();
 }
 
 // ---------- dien + gui ket qua ----------
@@ -185,7 +197,6 @@ async function fillAndSend(text) {
     return { ok: false, why: 'send-button-never-enabled' };
   }
 
-  // chatgpt + claude (best-effort cho claude)
   const el =
     PLATFORM === 'chatgpt'
       ? document.querySelector(CHATGPT_COMPOSER)
@@ -212,33 +223,179 @@ async function fillAndSend(text) {
   return { ok: true, via: 'enter' };
 }
 
-// ---------- pill UI ----------
+// ---------- pill + panel UI ----------
 
 let pill = null;
-function pillEnsure() {
-  if (pill) return pill;
-  pill = document.createElement('div');
-  pill.id = 'wgb-companion-pill';
-  pill.style.cssText =
-    'position:fixed;bottom:14px;right:14px;z-index:999999;font:12px/1.4 system-ui,sans-serif;' +
-    'background:#111827;color:#e5e7eb;padding:6px 10px;border-radius:8px;box-shadow:0 2px 10px rgba(0,0,0,.35);' +
-    'opacity:.88;cursor:default;max-width:340px';
-  document.documentElement.appendChild(pill);
-  return pill;
-}
-function pillSet(text, busy) {
-  const p = pillEnsure();
-  p.textContent = 'wgb ▸ ' + text;
-  p.style.background = busy ? '#1d4ed8' : '#111827';
+let panel = null;
+let panelOpen = false;
+let lastStatusText = PLATFORM + ' khoi dong...';
+let lastStatusBusy = false;
+
+function uiRoot() {
+  let root = document.getElementById('wgb-companion-root');
+  if (!root) {
+    root = document.createElement('div');
+    root.id = 'wgb-companion-root';
+    root.style.cssText = 'all:initial; position:fixed; bottom:14px; right:14px; z-index:2147483647; font:12px/1.45 system-ui,sans-serif;';
+    document.documentElement.appendChild(root);
+  }
+  return root;
 }
 
-// ---------- relay ----------
+function pillEnsure() {
+  const root = uiRoot();
+  if (!pill) {
+    pill = document.createElement('div');
+    pill.id = 'wgb-companion-pill';
+    pill.style.cssText =
+      'display:inline-block;background:#111827;color:#e5e7eb;padding:6px 10px;border-radius:8px;' +
+      'box-shadow:0 2px 10px rgba(0,0,0,.35);opacity:.92;cursor:pointer;max-width:340px;user-select:none;';
+    pill.title = 'Click de mo/doi panel wgb-companion';
+    pill.addEventListener('click', () => { panelOpen = !panelOpen; renderPanel(); });
+    root.appendChild(pill);
+  }
+  return pill;
+}
+
+function bar(label, value, max, color) {
+  const pct = Math.min(100, Math.round((value / max) * 100));
+  const row = document.createElement('div');
+  row.style.cssText = 'margin:4px 0;';
+  const lab = document.createElement('div');
+  lab.textContent = label + ': ' + value + '/' + max;
+  lab.style.cssText = 'color:#9ca3af;font-size:11px;margin-bottom:2px;';
+  const track = document.createElement('div');
+  track.style.cssText = 'height:5px;background:#374151;border-radius:3px;overflow:hidden;';
+  const fill = document.createElement('div');
+  fill.style.cssText = 'height:5px;width:' + pct + '%;background:' + color + ';border-radius:3px;';
+  track.appendChild(fill);
+  row.appendChild(lab); row.appendChild(track);
+  return row;
+}
+
+function rowLine(label, value, valueColor) {
+  const r = document.createElement('div');
+  r.style.cssText = 'display:flex;justify-content:space-between;gap:10px;margin:2px 0;';
+  const a = document.createElement('span');
+  a.textContent = label; a.style.color = '#9ca3af';
+  const b = document.createElement('span');
+  b.textContent = value; b.style.color = valueColor || '#e5e7eb';
+  r.appendChild(a); r.appendChild(b);
+  return r;
+}
+
+function goalLine(g) {
+  const icon = g.status === 'done' ? '✅' : g.status === 'failed' ? '❌' : g.status === 'running' ? '▶' : '⏳';
+  const r = document.createElement('div');
+  r.style.cssText = 'margin:3px 0;padding:4px 6px;background:#1f2937;border-radius:6px;';
+  const t1 = document.createElement('div');
+  t1.textContent = icon + ' ' + g.id + ' · ' + g.status;
+  t1.style.cssText = 'color:#e5e7eb;font-size:11px;';
+  const t2 = document.createElement('div');
+  t2.textContent = (g.task || '').slice(0, 60);
+  t2.style.cssText = 'color:#9ca3af;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
+  r.appendChild(t1); r.appendChild(t2);
+  return r;
+}
+
+async function renderPanel() {
+  const root = uiRoot();
+  if (panel) { panel.remove(); panel = null; }
+  if (!panelOpen) return;
+  panel = document.createElement('div');
+  panel.id = 'wgb-companion-panel';
+  panel.style.cssText =
+    'background:#111827;color:#e5e7eb;border:1px solid #374151;border-radius:10px;padding:10px 12px;' +
+    'margin-bottom:8px;width:330px;box-shadow:0 6px 24px rgba(0,0,0,.5);';
+
+  const head = document.createElement('div');
+  head.style.cssText = 'display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;';
+  const title = document.createElement('b');
+  title.textContent = 'wgb-companion v' + VERSION;
+  const close = document.createElement('span');
+  close.textContent = '✕'; close.style.cssText = 'cursor:pointer;color:#9ca3af;padding:2px 6px;';
+  close.addEventListener('click', () => { panelOpen = false; renderPanel(); });
+  head.appendChild(title); head.appendChild(close);
+  panel.appendChild(head);
+
+  const [status, goals, shared] = await Promise.all([
+    relay({ path: '/status', method: 'GET' }),
+    relay({ path: '/goals?limit=5', method: 'GET' }),
+    getSharedLimit()
+  ]);
+
+  panel.appendChild(rowLine('Nen tang', PLATFORM, '#93c5fd'));
+  panel.appendChild(rowLine('Server', status.error ? 'OFFLINE (' + status.error + ')' : 'online · runner: ' + (status.data?.runner || '?'), status.error ? '#f87171' : '#4ade80'));
+  panel.appendChild(rowLine('Trigger', S.trigger));
+  rollLedger();
+  panel.appendChild(bar('Record fetch (gio)', ledger.recordFetch, BUDGET.recordFetch, ledger.recordFetch >= BUDGET.recordFetch ? '#f87171' : '#60a5fa'));
+  panel.appendChild(bar('Send (gio)', ledger.sends, BUDGET.sends, ledger.sends >= BUDGET.sends ? '#f87171' : '#60a5fa'));
+  if (shared) {
+    panel.appendChild(rowLine('Rate limit', 'nghi ' + Math.max(0, Math.round((shared.until - Date.now()) / 1000)) + 's (' + shared.reason + ')', '#fbbf24'));
+  } else {
+    panel.appendChild(rowLine('Rate limit', 'OK', '#4ade80'));
+  }
+
+  const gh = document.createElement('div');
+  gh.textContent = 'Goals gan nhat:'; gh.style.cssText = 'color:#9ca3af;font-size:11px;margin-top:8px;';
+  panel.appendChild(gh);
+  if (Array.isArray(goals) && goals.length) for (const g of goals) panel.appendChild(goalLine(g));
+  else {
+    const none = document.createElement('div');
+    none.textContent = '(chua co goal — goj "' + S.trigger + ' <task>" trong chat)';
+    none.style.color = '#6b7280';
+    panel.appendChild(none);
+  }
+
+  const btnRow = document.createElement('div');
+  btnRow.style.cssText = 'display:flex;gap:6px;margin-top:8px;';
+  const bToggle = document.createElement('button');
+  bToggle.textContent = S.enabled ? 'Tat' : 'Bat';
+  bToggle.style.cssText = 'flex:1;padding:5px;border:0;border-radius:6px;background:#374151;color:#e5e7eb;cursor:pointer;';
+  bToggle.addEventListener('click', () => { chrome.storage.sync.set({ enabled: !S.enabled }); S.enabled = !S.enabled; renderPanel(); });
+  const bRefresh = document.createElement('button');
+  bRefresh.textContent = 'Lam moi';
+  bRefresh.style.cssText = 'flex:1;padding:5px;border:0;border-radius:6px;background:#2563eb;color:#fff;cursor:pointer;';
+  bRefresh.addEventListener('click', () => { S.firstPass = true; S.lastHash = null; renderPanel(); });
+  btnRow.appendChild(bToggle); btnRow.appendChild(bRefresh);
+  panel.appendChild(btnRow);
+
+  root.insertBefore(panel, root.firstChild);
+}
+
+// giu pill song sau SPA re-render + tao panel reload dinh ky khi mo
+setInterval(() => {
+  if (S.dead) return;
+  if (!document.getElementById('wgb-companion-root')) { pill = null; panel = null; }
+  pillEnsure();
+  pill.textContent = 'wgb ▸ ' + lastStatusText;
+  pill.style.background = lastStatusBusy ? '#1d4ed8' : '#111827';
+  if (panelOpen) renderPanel();
+}, 2500);
+
+function pillSet(text, busy) {
+  lastStatusText = text;
+  lastStatusBusy = busy;
+  pillEnsure();
+  pill.textContent = 'wgb ▸ ' + text;
+  pill.style.background = busy ? '#1d4ed8' : '#111827';
+}
 
 function relay(msg) {
   return new Promise((resolve) => {
-    chrome.runtime.sendMessage(msg, (res) => {
-      resolve(res && res.ok ? res.data : { error: (res && (res.error || res.status)) || 'no-response' });
-    });
+    let done = false;
+    try {
+      chrome.runtime.sendMessage(msg, (res) => {
+        done = true;
+        const err = chrome.runtime.lastError;
+        if (err) { resolve({ error: 'context-invalidated' }); return; }
+        resolve(res && res.ok ? res.data : { error: (res && (res.error || res.status)) || 'no-response' });
+      });
+    } catch (e) {
+      resolve({ error: 'context-invalidated' });
+      return;
+    }
+    setTimeout(() => { if (!done) resolve({ error: 'relay-timeout' }); }, 15000);
   });
 }
 
@@ -248,12 +405,17 @@ async function dispatchTask(task, contentHash) {
     return;
   }
   if (overBudget()) {
-    pillSet('vuot budget gio (' + ledger.recordFetch + ' fetch/' + ledger.sends + ' send) — nghi den gio sau', false);
+    pillSet('vuot budget gio (' + ledger.recordFetch + ' fetch/' + ledger.sends + ' send)', false);
     return;
   }
   S.busyGoalId = 'pending';
   pillSet('dispatch: ' + task.slice(0, 40), true);
   const d = await relay({ path: '/dispatch', method: 'POST', body: { text: task, platform: PLATFORM, chatUrl: location.href } });
+  if (d.error === 'context-invalidated') {
+    S.dead = true;
+    pillSet('extension moi cap nhat — RELOAD trang de tiep tuc', false);
+    return;
+  }
   if (!d.goalId) {
     pillSet('dispatch loi: ' + (d.error || '?'), false);
     S.busyGoalId = null;
@@ -290,13 +452,13 @@ async function dispatchTask(task, contentHash) {
 }
 
 async function tick() {
-  if (!S.enabled || S.busyGoalId) return;
+  if (!S.enabled || S.busyGoalId || S.dead) return;
   let lastUser = null;
   try { lastUser = await readLastUser(); } catch { return; }
   if (!lastUser) return;
   const flat = lastUser.replace(/\s+/g, ' ').trim();
-  if (flat.startsWith(S.replyPrefix)) return;                    // echo cua chinh no
-  if (Date.now() - S.lastSendTs < 20000) return;                 // cooldown
+  if (flat.startsWith(S.replyPrefix)) return;
+  if (Date.now() - S.lastSendTs < 20000) return;
   const h = hash(flat);
   if (S.firstPass) {
     S.firstPass = false;
@@ -315,8 +477,6 @@ async function tick() {
   dispatchTask(task, h);
 }
 
-// ChatGPT: nghe submit cua form composer — khong ton request. Submit xong 2.5s
-// thi doc record dung 1 lan de lay noi dung tin (neu la trigger thi dispatch).
 document.addEventListener(
   'submit',
   (e) => {
@@ -327,5 +487,5 @@ document.addEventListener(
   true
 );
 
-pillSet(PLATFORM + ' khoi dong... (v1.2, 1 request/tin)', false);
+pillSet(PLATFORM + ' khoi dong... (v' + VERSION + ')', false);
 setInterval(tick, S.pollMs);
