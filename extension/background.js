@@ -1,8 +1,43 @@
 // Relay duy nhất content -> wgb serve (tránh mixed-content/CSP của trang chat).
 const DEFAULTS = { serverUrl: 'http://127.0.0.1:8787', token: '' };
 
+// v1.9.1 — self-heal: sau khi extension được reload/update, các tab chat ĐANG MỞ
+// mất content script cũ (orphan) và Chrome không tự inject lại. Người dùng từng
+// thấy popup nói "tab chưa mở" trong khi tab thật sự đang mở — nguyên nhân là
+// beacon chết theo script orphan. Background tự re-inject vào mọi tab khớp
+// pattern, bỏ qua tab đã có pill để không chạy song song hai tick loop.
+const CONTENT_MATCHES = [
+  'https://chatgpt.com/*',
+  'https://gemini.google.com/*',
+  'https://claude.ai/*'
+];
+
+async function reinjectContentScripts() {
+  let tabs = [];
+  try { tabs = await chrome.tabs.query({ url: CONTENT_MATCHES }); } catch { return; }
+  for (const tab of tabs) {
+    if (!tab.id) continue;
+    try {
+      const [probe] = await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        func: () => Boolean(document.getElementById('wgb-companion-root'))
+      });
+      if (probe && probe.result) continue; // content script còn sống
+      await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        files: ['lib.js', 'content.js']
+      });
+    } catch { /* tab không inject được (vừa điều hướng, bị đóng…) — bỏ qua */ }
+  }
+}
+
 chrome.runtime.onInstalled.addListener(() => {
   chrome.storage.sync.get(DEFAULTS, (s) => chrome.storage.sync.set(s));
+  reinjectContentScripts();
+});
+
+chrome.runtime.onStartup.addListener(() => {
+  reinjectContentScripts();
 });
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {

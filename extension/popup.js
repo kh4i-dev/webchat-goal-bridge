@@ -110,7 +110,12 @@ function renderPlatforms(ledgers, sharedLimits, presence) {
     name.appendChild(dot);
     const lab = document.createElement('span');
     lab.className = 'plabel';
-    lab.textContent = live ? 'đang hoạt động' : 'tab chưa mở';
+    // v1.9.1: không nói dối "tab chưa mở" khi tab có thể đang mở nhưng beacon
+    // vừa orphan sau update — gợi ý hành động cụ thể thay vì trạng thái sai.
+    lab.textContent = live ? 'đang hoạt động' : 'chưa thấy beacon — reload tab chat';
+    lab.title = live
+      ? 'Beacon presence mới trong 30s'
+      : 'Không nhận beacon nào của nền tảng này trong 30s. Nếu tab đang mở: extension vừa update thì background tự re-inject, hoặc bạn reload tab chat.';
     name.appendChild(lab);
     info.appendChild(name);
 
@@ -232,7 +237,8 @@ function refreshLive() {
       ? goals.find((g) => g.status === 'running' || g.status === 'queued')
       : null;
     if (banner) {
-      if (active) {
+      // v1.9.1 guard: KHÔNG BAO GIỜ hiện banner rỗng — phải có goal thật sự
+      if (active && active.id) {
         banner.classList.remove('hidden');
         banner.innerHTML = '';
         const chk = document.createElement('span');
@@ -250,8 +256,16 @@ function refreshLive() {
       }
     }
   });
-  chrome.storage.local.get({ ledgers: null, sharedLimits: null, presence: null }, (s) =>
-    renderPlatforms(s.ledgers, s.sharedLimits, s.presence)
+  chrome.storage.local.get(
+    { ledgers: null, sharedLimits: null, presence_chatgpt: null, presence_gemini: null, presence_claude: null },
+    (s) => {
+      // v1.9.1: presence theo key riêng từng platform (chống race ghi đè)
+      const presence = {};
+      for (const p of PLATFORMS) {
+        if (s['presence_' + p.key]) presence[p.key] = s['presence_' + p.key];
+      }
+      renderPlatforms(s.ledgers, s.sharedLimits, presence);
+    }
   );
 }
 

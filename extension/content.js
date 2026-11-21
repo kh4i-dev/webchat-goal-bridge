@@ -72,12 +72,14 @@ function saveLedger() {
 function overBudget() { rollLedger(); return ledger.recordFetch >= BUDGET.recordFetch || ledger.sends >= BUDGET.sends; }
 
 // Presence beacon: báo "tab này đang sống" để popup hiện dot xanh theo nền tảng.
+// v1.9.1: MỖI PLATFORM MỘT KEY RIÊNG (presence_<platform>). Cách cũ ghi chung 1
+// object `presence` theo kiểu read-modify-write — 2 tab cùng beacon 10s sẽ ghi
+// đè lẫn nhau: beacon ChatGPT đọc snapshot cũ và XÓA timestamp Gemini vừa ghi,
+// khiến popup hiển thị "tab chưa mở" dù tab thật sự đang mở (đã gặp thật).
+const PKEY = 'presence_' + (typeof PLATFORM !== 'undefined' ? PLATFORM : 'unknown');
 function beacon() {
-  chrome.storage.local.get({ presence: {} }, (s) => {
-    const P = s.presence || {};
-    P[PLATFORM] = { ts: Date.now(), url: location.href.slice(0, 140) };
-    chrome.storage.local.set({ presence: P });
-  });
+  // set 1 key duy nhất — không đọc, không đè key của platform khác
+  chrome.storage.local.set({ [PKEY]: { ts: Date.now(), url: location.href.slice(0, 140) } });
 }
 setInterval(beacon, 10000);
 beacon();
