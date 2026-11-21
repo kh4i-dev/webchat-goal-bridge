@@ -1,6 +1,6 @@
 const FIELDS = { serverUrl: '', token: '', trigger: '@wgb' };
 const CHECKS = { enabled: true, autoSend: true };
-const BUDGET = { recordFetch: 40, sends: 40 };
+const BUDGET = globalThis.WGB_LIB.BUDGET;
 const manifest = chrome.runtime.getManifest();
 document.getElementById('ver');
 
@@ -29,10 +29,8 @@ function relay(msg, cb) {
   });
 }
 
-function barColor(pct) {
-  if (pct > 90) return 'var(--bad)';
-  if (pct > 75) return 'var(--warn)';
-  return 'var(--info)';
+function barColor(tone) {
+  return tone === 'bad' ? 'var(--bad)' : tone === 'warn' ? 'var(--warn)' : 'var(--info)';
 }
 
 function fmtUp(sec) {
@@ -81,18 +79,21 @@ function renderPlatforms(ledgers, sharedLimits, presence) {
     info.appendChild(name);
 
     const total = Math.max(led.recordFetch || 0, led.sends || 0);
-    const pct = Math.min(100, Math.round((total / BUDGET.recordFetch) * 100));
+    // v1.8: budgetState là source-of-truth (lib.js). Bug cũ: 40/40 hiện badge
+    // "gần hạn mức" trong khi thực tế đã bị CHẶN (overBudget() = true).
+    const bs = globalThis.WGB_LIB.budgetState(led, BUDGET.recordFetch);
+    const pct = bs.pct;
     const bar = document.createElement('div');
     bar.className = 'pbar';
     const fill = document.createElement('div');
     fill.style.width = pct + '%';
-    fill.style.background = barColor(pct);
+    fill.style.background = barColor(bs.tone);
     bar.appendChild(fill);
     info.appendChild(bar);
 
     const num = document.createElement('div');
     num.className = 'pnum';
-    num.textContent = 'fetch ' + (led.recordFetch || 0) + '/' + BUDGET.recordFetch + ' · send ' + (led.sends || 0) + '/' + BUDGET.sends;
+    num.textContent = 'fetch ' + bs.fetch + '/' + BUDGET.recordFetch + ' · send ' + bs.sends + '/' + BUDGET.sends;
     info.appendChild(num);
     row.appendChild(info);
 
@@ -101,7 +102,11 @@ function renderPlatforms(ledgers, sharedLimits, presence) {
       badge.className = 'pbadge warn';
       badge.textContent = 'nghỉ ' + Math.max(0, Math.round((limit.until - Date.now()) / 1000)) + 's';
       badge.title = limit.reason || '429';
-    } else if (pct > 90) {
+    } else if (bs.level === 'blocked') {
+      badge.className = 'pbadge bad';
+      badge.textContent = 'hết hạn mức';
+      badge.title = 'Đã chạm trần ' + BUDGET.recordFetch + ' lượt/giờ — task mới sẽ bị chặn';
+    } else if (bs.level === 'near') {
       badge.className = 'pbadge bad';
       badge.textContent = 'gần hạn mức';
     } else {

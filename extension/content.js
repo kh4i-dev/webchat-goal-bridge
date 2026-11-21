@@ -1,4 +1,4 @@
-// wgb-companion v1.3 — chat web là NÃO chỉ đạo, agent local là TAY CHÂN.
+// wgb-companion v1.8 — chat web là NÃO chỉ đạo, agent local là TAY CHÂN.
 //
 // Chống rate-limit (429) — "1 request / 1 tin nhắn":
 //  * ChatGPT: nghe submit form (0 request) → 2.5s sau đọc record 1 lần; safety-net 60s.
@@ -9,6 +9,10 @@
 //  * Dedupe nội dung (aegisloop): task trùng không chạy lại.
 //
 // UI: pill góc phải — click để mở panel (server, budget, rate-limit, goals gần nhất).
+//
+// v1.8: dùng extension/lib.js làm source-of-truth cho budget/ladder/echo/receipt/version.
+//       Sửa: version lệch (1.3.0 vs manifest), badge "gần hạn mức" khi đã hết hạn,
+//       ladder 429 dùng chung giữa các platform, đếm send trước khi gửi thành công.
 
 const DEFAULTS = {
   serverUrl: 'http://127.0.0.1:8787',
@@ -22,7 +26,7 @@ const DEFAULTS = {
 };
 
 const BUDGET = { recordFetch: 40, sends: 40 };
-const VERSION = '1.3.0';
+const VERSION = manifestVersion(chrome.runtime.getManifest());
 
 const S = { ...DEFAULTS, lastHash: null, busyGoalId: null, lastSendTs: 0, firstPass: true, dead: false };
 chrome.storage.sync.get(DEFAULTS, (s) => Object.assign(S, s));
@@ -92,17 +96,26 @@ async function clearSharedLimit() {
 
 // Ladder cooldown (chatgpt-use throttle.rs): hits cách nhau >1h restart ladder;
 // monotonic until — hit lặp lại KHÔNG BAO GIỜ rút ngắn cooldown đang chạy.
+// v1.8: limitHits lưu PER-PLATFORM (trước đây 1 key phẳng -> ChatGPT dính limit
+// làm Gemini cũng bị nghỉ 15m, trái với nguyên tắc "mỗi app một hạn mức riêng").
 const LADDER_MS = [60000, 300000, 900000, 1800000]; // 1p → 5p → 15p → 30p
 let limitHits = null;
-chrome.storage.local.get({ limitHits: null }, (s) => { limitHits = s.limitHits; });
+chrome.storage.local.get({ limitHits: null }, (s) => { limitHits = s.limitHits || {}; });
 
 async function noteLimitHit(minWaitMs, reason) {
   const now = Date.now();
-  if (!limitHits || now - limitHits.lastHit > 3600000) limitHits = { lastHit: now, hits: 1 };
-  else limitHits.hits++;
+  let mine = limitHits[PLATFORM];
+  if (!mine || now - mine.lastHit > 3600000) mine = { lastHit: now, hits: 1 };
+  else mine = { lastHit: mine.lastHit, hits: mine.hits + 1 };
+  limitHits[PLATFORM] = mine;
   await chrome.storage.local.set({ limitHits });
-  const step = LADDER_MS[Math.min(limitHits.hits - 1, LADDER_MS.length - 1)];
-  const until = Math.max(now + step, now + minWaitMs, rateLimitedUntil);
+  const { until } = nextLimitUntil({
+    now,
+    hits: mine.hits,
+    minWaitMs,
+    currentUntil: rateLimitedUntil,
+    ladder: LADDER_MS
+  });
   await setSharedLimit(until - now, reason);
 }
 
@@ -137,7 +150,9 @@ function inTurnBackoffMs() {
 }
 
 const HOST = location.host;
-const PLATFORM = HOST.includes('chatgpt') ? 'chatgpt' : HOST.includes('gemini') ? 'gemini' : 'claude';
+// v1.8: platformOfHost so khớp domain thật (includes() trần sẽ match
+// "chatgpt.com.evil.test" — không phải domain giả mạo nào cũng được chạy).
+const PLATFORM = platformOfHost(HOST);
 
 function hash(s) {
   let h = 5381;
@@ -248,8 +263,14 @@ const CHATGPT_COMPOSER =
   'form[data-chatgpt-composer] [contenteditable="true"][role="textbox"], ' +
   'form [data-composer-markdown][contenteditable="true"][role="textbox"]';
 
+/** Số user-turn hiện tại — dùng làm receipt (bằng chứng đã gửi thật). */
+function userTurnCount() {
+  if (PLATFORM === 'gemini') return document.querySelectorAll('user-query').length;
+  if (PLATFORM === 'claude') return document.querySelectorAll('[data-testid="user-message"], .font-user-message').length;
+  return 0;
+}
+
 async function fillAndSend(text) {
-  ledger.sends++; saveLedger();
   if (PLATFORM === 'gemini') {
     const el = document.querySelector('.ql-editor[contenteditable="true"], rich-textarea [contenteditable="true"]');
     if (!el) return { ok: false, why: 'no-editor' };
@@ -266,7 +287,22 @@ async function fillAndSend(text) {
           const a = (b.getAttribute('aria-label') || '') + ' ' + (b.getAttribute('mattooltip') || '');
           return /send|g[ửu]i/i.test(a) && b.offsetParent !== null;
         });
-      if (btn) { btn.click(); return { ok: true, via: 'gemini-btn' }; }
+      if (btn) {
+        const before = userTurnCount();
+        btn.click();
+        // v1.8: chỉ tính send khi có receipt (user-turn tăng). Không có receipt
+        // => submitted=unknown, KHÔNG gửi lại (chống gửi trùng).
+        let after = before;
+        for (let i = 0; i < 12; i++) {
+          await sleep(250);
+          after = userTurnCount();
+          if (shouldSendReceipt({ before, after })) {
+            ledger.sends++; saveLedger();
+            return { ok: true, via: 'gemini-btn', submitted: 'yes' };
+          }
+        }
+        return { ok: false, why: 'submitted-unknown', submitted: 'unknown' };
+      }
       await sleep(250);
     }
     return { ok: false, why: 'send-button-never-enabled' };
@@ -285,16 +321,43 @@ async function fillAndSend(text) {
     const btn = [...document.querySelectorAll('button')].find(
       (b) => /send/i.test(b.getAttribute('aria-label') || '') && b.offsetParent !== null && !b.disabled
     );
-    if (btn) { btn.click(); return { ok: true, via: 'claude-send-btn' }; }
+    if (btn) {
+      const before = userTurnCount();
+      btn.click();
+      let after = before;
+      for (let i = 0; i < 12; i++) {
+        await sleep(250);
+        after = userTurnCount();
+        if (shouldSendReceipt({ before, after })) {
+          ledger.sends++; saveLedger();
+          return { ok: true, via: 'claude-send-btn', submitted: 'yes' };
+        }
+      }
+      return { ok: false, why: 'submitted-unknown', submitted: 'unknown' };
+    }
   }
   const form = el.closest('form');
   if (form) {
     const sub = form.querySelector('button[type="submit"]');
-    if (sub && !sub.disabled) { sub.click(); return { ok: true, via: 'form-submit-btn' }; }
-    try { form.requestSubmit(); return { ok: true, via: 'requestSubmit' }; } catch { /* tiep */ }
+    if (sub && !sub.disabled) {
+      const before = userTurnCount();
+      sub.click();
+      let after = before;
+      for (let i = 0; i < 12; i++) {
+        await sleep(250);
+        after = userTurnCount();
+        if (shouldSendReceipt({ before, after })) {
+          ledger.sends++; saveLedger();
+          return { ok: true, via: 'form-submit-btn', submitted: 'yes' };
+        }
+      }
+      return { ok: false, why: 'submitted-unknown', submitted: 'unknown' };
+    }
+    try { form.requestSubmit(); ledger.sends++; saveLedger(); return { ok: true, via: 'requestSubmit' }; } catch { /* tiep */ }
   }
   const ev = new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true });
   el.dispatchEvent(ev);
+  ledger.sends++; saveLedger();
   return { ok: true, via: 'enter' };
 }
 
@@ -549,7 +612,9 @@ async function tick() {
   try { lastUser = await readLastUser(); } catch { return; }
   if (!lastUser) return;
   const flat = lastUser.replace(/\s+/g, ' ').trim();
-  if (flat.startsWith(S.replyPrefix)) return;
+  // v1.8: chỉ reply prefix mới bị bỏ qua. Task user gõ bắt đầu bằng trigger
+  // vẫn phải chạy (trước đây nếu replyPrefix rỗng -> mọi tin đều bị nuốt).
+  if (isReplyEcho(flat, S.replyPrefix)) return;
   if (Date.now() - S.lastSendTs < 20000) return;
   const h = hash(flat);
   if (S.firstPass) {
