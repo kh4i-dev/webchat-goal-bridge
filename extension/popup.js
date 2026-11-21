@@ -23,9 +23,13 @@ function renderBudget(ledger, shared) {
   const f = Math.min(BUDGET.recordFetch, ledger?.recordFetch || 0);
   const s2 = Math.min(BUDGET.sends, ledger?.sends || 0);
   document.getElementById('bFetch').textContent = f + '/' + BUDGET.recordFetch;
-  document.getElementById('barFetch').style.width = Math.round((f / BUDGET.recordFetch) * 100) + '%';
+  const bf = document.getElementById('barFetch');
+  bf.style.width = Math.round((f / BUDGET.recordFetch) * 100) + '%';
+  bf.className = f >= BUDGET.recordFetch ? 'hot' : '';
   document.getElementById('bSend').textContent = s2 + '/' + BUDGET.sends;
-  document.getElementById('barSend').style.width = Math.round((s2 / BUDGET.sends) * 100) + '%';
+  const bs = document.getElementById('barSend');
+  bs.style.width = Math.round((s2 / BUDGET.sends) * 100) + '%';
+  bs.className = s2 >= BUDGET.sends ? 'hot' : '';
   const li = document.getElementById('limitInfo');
   if (shared && shared.until > Date.now()) {
     li.textContent = 'nghỉ ' + Math.round((shared.until - Date.now()) / 1000) + 's (' + (shared.reason || '429') + ')';
@@ -36,19 +40,28 @@ function renderBudget(ledger, shared) {
   }
 }
 
+const ST_TAG = { done: '[OK] ', failed: '[ERR]', running: '[RUN]', queued: '[QUE]' };
 function renderGoals(goals) {
   const el = document.getElementById('goals');
   if (!Array.isArray(goals) || !goals.length) {
-    el.textContent = '(chưa có goal — gõ @wgb <task> trong chat)';
+    el.innerHTML = '<div class="empty">(chưa có goal — gõ @wgb &lt;task&gt; trong chat)</div>';
     return;
   }
   el.innerHTML = '';
   for (const g of goals.slice(0, 5)) {
-    const icon = g.status === 'done' ? '✅' : g.status === 'failed' ? '❌' : g.status === 'running' ? '▶' : '⏳';
-    const d = document.createElement('div');
-    d.className = 'gline';
-    d.textContent = icon + ' ' + g.id + ' · ' + g.status + ' · ' + (g.task || '').slice(0, 44);
-    el.appendChild(d);
+    const ln = document.createElement('div');
+    ln.className = 'ln';
+    const st = document.createElement('span');
+    st.className = 'st ' + g.status;
+    st.textContent = ST_TAG[g.status] || '[···]';
+    const id = document.createElement('span');
+    id.className = 'gid';
+    id.textContent = g.id.slice(0, 10);
+    const task = document.createElement('span');
+    task.className = 'task';
+    task.textContent = (g.task || '').slice(0, 60);
+    ln.appendChild(st); ln.appendChild(id); ln.appendChild(task);
+    el.appendChild(ln);
   }
 }
 
@@ -56,9 +69,12 @@ function refreshLive() {
   relay({ path: '/status', method: 'GET' }, (res) => {
     const el = document.getElementById('serverInfo');
     if (res.data) {
-      el.innerHTML = '<span class="ok">● online</span> — runner: ' + res.data.runner + ' · uptime: ' + res.data.uptimeSec + 's';
+      const up = res.data.uptimeSec >= 3600
+        ? Math.floor(res.data.uptimeSec / 3600) + 'h' + Math.round((res.data.uptimeSec % 3600) / 60) + 'p'
+        : Math.round(res.data.uptimeSec / 60) + 'p';
+      el.innerHTML = '<span class="led"></span><span class="ok">online</span> &nbsp;runner: <span class="info">' + res.data.runner + '</span> &nbsp;· up ' + up;
     } else {
-      el.innerHTML = '<span class="bad">● offline</span> — ' + (res.error || 'chạy `node src/cli.js serve`');
+      el.innerHTML = '<span class="led bad"></span><span class="bad">offline</span> — ' + (res.error || 'chạy: node src/cli.js serve');
     }
   });
   relay({ path: '/goals?limit=5', method: 'GET' }, (res) => renderGoals(res.data || []));

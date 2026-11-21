@@ -108,6 +108,20 @@ function exprRecordMessages(convId) {
   })()`;
 }
 
+/** Dinh kem anh: DataTransfer -> input[type=file] cua form composer + change event. */
+const exprAttach = (entries) => `(async () => {
+  const dt = new DataTransfer();
+  for (const [i, e] of ${JSON.stringify(entries)}.entries()) {
+    const blob = await (await fetch(e.url)).blob();
+    dt.items.add(new File([blob], e.name || ('attach-' + (i + 1) + '.png'), { type: blob.type || 'image/png' }));
+  }
+  const input = document.querySelector('form input[type="file"]');
+  if (!input) return { ok: false, stage: 'no-file-input' };
+  input.files = dt.files;
+  input.dispatchEvent(new Event('change', { bubbles: true }));
+  return { ok: true, n: dt.files.length };
+})()`;
+
 function exprFill(text) {
   // Chunked insertText ≤1500 chars + fingerprint verify (chatgpt-use check_fingerprint).
   const chunks = [];
@@ -268,7 +282,12 @@ export default defineConnector({
    * Send: fill (fingerprint) -> submit -> xac nhan bang user-turn count.
    * submitted: 'yes' | 'unknown' (khong bao gio tu dong gui lai khi unknown).
    */
-  async send(conn, text) {
+  async send(conn, text, { images } = {}) {
+    if (images && images.length) {
+      const att = await conn.evaluate(exprAttach(images));
+      if (!att.ok) return { ok: false, stage: 'attach:' + att.stage, detail: att };
+      await sleep(1500); // cho preview anh render truoc khi fill text
+    }
     const filled = await conn.evaluate(exprFill(String(text)));
     if (!filled.ok) return { ok: false, stage: filled.stage, detail: filled };
     const before = await this.userTurnCount(conn);

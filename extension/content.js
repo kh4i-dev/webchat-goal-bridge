@@ -278,7 +278,9 @@ function uiRoot() {
   if (!root) {
     root = document.createElement('div');
     root.id = 'wgb-companion-root';
-    root.style.cssText = 'all:initial; position:fixed; bottom:14px; right:14px; z-index:2147483647; font:12px/1.45 system-ui,sans-serif;';
+    root.style.cssText =
+      "all:initial; position:fixed; bottom:14px; right:14px; z-index:2147483647;" +
+      "font:12px/1.5 ui-monospace,'Cascadia Mono',Consolas,monospace; color:#c9d4e3;";
     document.documentElement.appendChild(root);
   }
   return root;
@@ -290,8 +292,9 @@ function pillEnsure() {
     pill = document.createElement('div');
     pill.id = 'wgb-companion-pill';
     pill.style.cssText =
-      'display:inline-block;background:#111827;color:#e5e7eb;padding:6px 10px;border-radius:8px;' +
-      'box-shadow:0 2px 10px rgba(0,0,0,.35);opacity:.92;cursor:pointer;max-width:340px;user-select:none;';
+      'display:inline-block;background:#0a0e14;color:#22d3a5;padding:5px 10px;' +
+      'border:1px solid #1e2a3a;font-size:11px;letter-spacing:.5px;' +
+      'box-shadow:0 2px 12px rgba(0,0,0,.45);opacity:.94;cursor:pointer;max-width:360px;user-select:none;';
     pill.title = 'Click de mo/doi panel wgb-companion';
     pill.addEventListener('click', () => { panelOpen = !panelOpen; renderPanel(); });
     root.appendChild(pill);
@@ -302,14 +305,17 @@ function pillEnsure() {
 function bar(label, value, max, color) {
   const pct = Math.min(100, Math.round((value / max) * 100));
   const row = document.createElement('div');
-  row.style.cssText = 'margin:4px 0;';
+  row.style.cssText = 'margin:5px 0 2px;';
   const lab = document.createElement('div');
-  lab.textContent = label + ': ' + value + '/' + max;
-  lab.style.cssText = 'color:#9ca3af;font-size:11px;margin-bottom:2px;';
+  lab.textContent = label;
+  lab.style.cssText = 'display:flex;justify-content:space-between;color:#5c7089;font-size:10.5px;';
+  const val = document.createElement('span');
+  val.textContent = value + '/' + max;
+  lab.appendChild(val);
   const track = document.createElement('div');
-  track.style.cssText = 'height:5px;background:#374151;border-radius:3px;overflow:hidden;';
+  track.style.cssText = 'height:4px;background:#101827;border:1px solid #1e2a3a;margin-top:3px;';
   const fill = document.createElement('div');
-  fill.style.cssText = 'height:5px;width:' + pct + '%;background:' + color + ';border-radius:3px;';
+  fill.style.cssText = 'height:100%;width:' + pct + '%;background:' + color + ';';
   track.appendChild(fill);
   row.appendChild(lab); row.appendChild(track);
   return row;
@@ -319,24 +325,26 @@ function rowLine(label, value, valueColor) {
   const r = document.createElement('div');
   r.style.cssText = 'display:flex;justify-content:space-between;gap:10px;margin:2px 0;';
   const a = document.createElement('span');
-  a.textContent = label; a.style.color = '#9ca3af';
+  a.textContent = label; a.style.color = '#5c7089';
   const b = document.createElement('span');
-  b.textContent = value; b.style.color = valueColor || '#e5e7eb';
+  b.textContent = value; b.style.color = valueColor || '#c9d4e3';
   r.appendChild(a); r.appendChild(b);
   return r;
 }
 
+const PANEL_TAG = { done: '[OK]', failed: '[ERR]', running: '[RUN]', queued: '[QUE]' };
 function goalLine(g) {
-  const icon = g.status === 'done' ? '✅' : g.status === 'failed' ? '❌' : g.status === 'running' ? '▶' : '⏳';
   const r = document.createElement('div');
-  r.style.cssText = 'margin:3px 0;padding:4px 6px;background:#1f2937;border-radius:6px;';
-  const t1 = document.createElement('div');
-  t1.textContent = icon + ' ' + g.id + ' · ' + g.status;
-  t1.style.cssText = 'color:#e5e7eb;font-size:11px;';
-  const t2 = document.createElement('div');
-  t2.textContent = (g.task || '').slice(0, 60);
-  t2.style.cssText = 'color:#9ca3af;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
-  r.appendChild(t1); r.appendChild(t2);
+  r.style.cssText = 'display:flex;gap:6px;padding:2px 0;border-bottom:1px dashed #1e2a3a;font-size:10.5px;';
+  const st = document.createElement('span');
+  st.textContent = PANEL_TAG[g.status] || '[···]';
+  st.style.color = g.status === 'done' ? '#22d3a5' : g.status === 'failed' ? '#f87171' : g.status === 'running' ? '#38bdf8' : '#fbbf24';
+  const id = document.createElement('span');
+  id.textContent = g.id.slice(0, 10); id.style.color = '#38bdf8';
+  const task = document.createElement('span');
+  task.textContent = (g.task || '').slice(0, 48);
+  task.style.cssText = 'color:#5c7089;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1;';
+  r.appendChild(st); r.appendChild(id); r.appendChild(task);
   return r;
 }
 
@@ -347,17 +355,23 @@ async function renderPanel() {
   panel = document.createElement('div');
   panel.id = 'wgb-companion-panel';
   panel.style.cssText =
-    'background:#111827;color:#e5e7eb;border:1px solid #374151;border-radius:10px;padding:10px 12px;' +
-    'margin-bottom:8px;width:330px;box-shadow:0 6px 24px rgba(0,0,0,.5);';
+    'background:#0f141b;color:#c9d4e3;border:1px solid #2a3a52;padding:10px 12px;' +
+    'margin-bottom:8px;width:360px;box-shadow:0 6px 24px rgba(0,0,0,.6);';
 
   const head = document.createElement('div');
-  head.style.cssText = 'display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;';
+  head.style.cssText =
+    "display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;" +
+    "border-bottom:1px solid #2a3a52;padding-bottom:5px;";
   const title = document.createElement('b');
-  title.textContent = 'wgb-companion v' + VERSION;
+  title.textContent = 'WGB//COMPANION';
+  title.style.cssText = 'color:#22d3a5;letter-spacing:1px;font-size:12px;';
+  const ver = document.createElement('span');
+  ver.textContent = 'v' + VERSION;
+  ver.style.cssText = 'color:#5c7089;font-size:10px;';
   const close = document.createElement('span');
-  close.textContent = '✕'; close.style.cssText = 'cursor:pointer;color:#9ca3af;padding:2px 6px;';
+  close.textContent = '✕'; close.style.cssText = 'cursor:pointer;color:#5c7089;padding:2px 6px;';
   close.addEventListener('click', () => { panelOpen = false; renderPanel(); });
-  head.appendChild(title); head.appendChild(close);
+  head.appendChild(title); head.appendChild(ver); head.appendChild(close);
   panel.appendChild(head);
 
   const [status, goals, shared] = await Promise.all([
@@ -366,38 +380,38 @@ async function renderPanel() {
     getSharedLimit()
   ]);
 
-  panel.appendChild(rowLine('Nen tang', PLATFORM, '#93c5fd'));
-  panel.appendChild(rowLine('Server', status.error ? 'OFFLINE (' + status.error + ')' : 'online · runner: ' + (status.data?.runner || '?'), status.error ? '#f87171' : '#4ade80'));
+  panel.appendChild(rowLine('Nền tảng', PLATFORM, '#38bdf8'));
+  panel.appendChild(rowLine('Server', status.error ? 'OFFLINE (' + status.error + ')' : 'online · runner: ' + (status.data?.runner || '?'), status.error ? '#f87171' : '#22d3a5'));
   panel.appendChild(rowLine('Trigger', S.trigger));
   rollLedger();
-  panel.appendChild(bar('Record fetch (gio)', ledger.recordFetch, BUDGET.recordFetch, ledger.recordFetch >= BUDGET.recordFetch ? '#f87171' : '#60a5fa'));
-  panel.appendChild(bar('Send (gio)', ledger.sends, BUDGET.sends, ledger.sends >= BUDGET.sends ? '#f87171' : '#60a5fa'));
+  panel.appendChild(bar('record fetch (giờ)', ledger.recordFetch, BUDGET.recordFetch, ledger.recordFetch >= BUDGET.recordFetch ? '#f87171' : '#38bdf8'));
+  panel.appendChild(bar('send (giờ)', ledger.sends, BUDGET.sends, ledger.sends >= BUDGET.sends ? '#f87171' : '#38bdf8'));
   if (shared) {
-    panel.appendChild(rowLine('Rate limit', 'nghi ' + Math.max(0, Math.round((shared.until - Date.now()) / 1000)) + 's (' + shared.reason + ')', '#fbbf24'));
+    panel.appendChild(rowLine('rate limit', 'nghỉ ' + Math.max(0, Math.round((shared.until - Date.now()) / 1000)) + 's (' + shared.reason + ')', '#fbbf24'));
   } else {
-    panel.appendChild(rowLine('Rate limit', 'OK', '#4ade80'));
+    panel.appendChild(rowLine('rate limit', 'OK', '#22d3a5'));
   }
 
   const gh = document.createElement('div');
-  gh.textContent = 'Goals gan nhat:'; gh.style.cssText = 'color:#9ca3af;font-size:11px;margin-top:8px;';
+  gh.textContent = '▸ GOALS GẦN NHẤT'; gh.style.cssText = 'color:#5c7089;font-size:10px;letter-spacing:2px;margin-top:8px;';
   panel.appendChild(gh);
   if (Array.isArray(goals) && goals.length) for (const g of goals) panel.appendChild(goalLine(g));
   else {
     const none = document.createElement('div');
-    none.textContent = '(chua co goal — goj "' + S.trigger + ' <task>" trong chat)';
-    none.style.color = '#6b7280';
+    none.textContent = '(chưa có goal — gõ "' + S.trigger + ' <task>" trong chat)';
+    none.style.color = '#5c7089';
     panel.appendChild(none);
   }
 
   const btnRow = document.createElement('div');
-  btnRow.style.cssText = 'display:flex;gap:6px;margin-top:8px;';
+  btnRow.style.cssText = 'display:flex;gap:6px;margin-top:10px;';
   const bToggle = document.createElement('button');
-  bToggle.textContent = S.enabled ? 'Tat' : 'Bat';
-  bToggle.style.cssText = 'flex:1;padding:5px;border:0;border-radius:6px;background:#374151;color:#e5e7eb;cursor:pointer;';
+  bToggle.textContent = S.enabled ? 'TẮT' : 'BẬT';
+  bToggle.style.cssText = 'flex:1;padding:5px 0;font:inherit;font-size:10px;letter-spacing:1px;background:transparent;border:1px solid #2a3a52;color:#5c7089;cursor:pointer;';
   bToggle.addEventListener('click', () => { chrome.storage.sync.set({ enabled: !S.enabled }); S.enabled = !S.enabled; renderPanel(); });
   const bRefresh = document.createElement('button');
-  bRefresh.textContent = 'Lam moi';
-  bRefresh.style.cssText = 'flex:1;padding:5px;border:0;border-radius:6px;background:#2563eb;color:#fff;cursor:pointer;';
+  bRefresh.textContent = 'LÀM MỚI';
+  bRefresh.style.cssText = 'flex:1;padding:5px 0;font:inherit;font-size:10px;letter-spacing:1px;background:transparent;border:1px solid #22d3a5;color:#22d3a5;cursor:pointer;';
   bRefresh.addEventListener('click', () => { S.firstPass = true; S.lastHash = null; renderPanel(); });
   btnRow.appendChild(bToggle); btnRow.appendChild(bRefresh);
   panel.appendChild(btnRow);
@@ -411,7 +425,8 @@ setInterval(() => {
   if (!document.getElementById('wgb-companion-root')) { pill = null; panel = null; }
   pillEnsure();
   pill.textContent = 'wgb ▸ ' + lastStatusText;
-  pill.style.background = lastStatusBusy ? '#1d4ed8' : '#111827';
+  pill.style.background = lastStatusBusy ? '#0c2a22' : '#0a0e14';
+  pill.style.borderColor = lastStatusBusy ? '#22d3a5' : '#1e2a3a';
   if (panelOpen) renderPanel();
 }, 2500);
 
@@ -420,7 +435,8 @@ function pillSet(text, busy) {
   lastStatusBusy = busy;
   pillEnsure();
   pill.textContent = 'wgb ▸ ' + text;
-  pill.style.background = busy ? '#1d4ed8' : '#111827';
+  pill.style.background = busy ? '#0c2a22' : '#0a0e14';
+  pill.style.borderColor = busy ? '#22d3a5' : '#1e2a3a';
 }
 
 function relay(msg) {
