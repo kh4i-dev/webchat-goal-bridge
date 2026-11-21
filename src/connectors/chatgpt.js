@@ -108,12 +108,16 @@ function exprRecordMessages(convId) {
   })()`;
 }
 
-/** Dinh kem anh: DataTransfer -> input[type=file] cua form composer + change event. */
+/** Dinh kem anh: base64 -> atob -> Blob -> DataTransfer -> input[type=file] + change event.
+ * KHONG dung fetch(data:) — CSP cua ChatGPT chan connect-src data:. */
 const exprAttach = (entries) => `(async () => {
   const dt = new DataTransfer();
   for (const [i, e] of ${JSON.stringify(entries)}.entries()) {
-    const blob = await (await fetch(e.url)).blob();
-    dt.items.add(new File([blob], e.name || ('attach-' + (i + 1) + '.png'), { type: blob.type || 'image/png' }));
+    const bin = atob(e.b64);
+    const bytes = new Uint8Array(bin.length);
+    for (let j = 0; j < bin.length; j++) bytes[j] = bin.charCodeAt(j);
+    const blob = new Blob([bytes], { type: e.mime || 'image/png' });
+    dt.items.add(new File([blob], e.name || ('attach-' + (i + 1) + '.png'), { type: blob.type }));
   }
   const input = document.querySelector('form input[type="file"]');
   if (!input) return { ok: false, stage: 'no-file-input' };

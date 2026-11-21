@@ -5,6 +5,7 @@
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { gateCheck, assertAllowedRoot } from '../security.js';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -44,8 +45,9 @@ const RUNNERS = {
   exec: async (task, cfg, log) => {
     const r = cfg.runner;
     if (!r.command) throw new Error('runner.exec can cfg.runner.command (dung {task} de chen)');
+    const cwd = assertAllowedRoot(r.cwd || '.', cfg);
     const filled = String(r.command).includes('{task}') ? r.command.replace('{task}', task) : `${r.command} ${task}`;
-    const res = await runProcess('cmd.exe', ['/d', '/s', '/c', filled], path.resolve(r.cwd || '.'), r.timeoutMs || 300000, log);
+    const res = await runProcess('cmd.exe', ['/d', '/s', '/c', filled], cwd, r.timeoutMs || 300000, log);
     if (res.code !== 0) throw new Error(`exit ${res.code}: ${(res.stderr || res.stdout).slice(-400)}`);
     return { text: (res.stdout || '(khong co stdout)').trim().slice(0, 4000) };
   },
@@ -53,7 +55,7 @@ const RUNNERS = {
   /** Chay opencode CLI non-interactive trong project dir cau hinh. */
   opencode: async (task, cfg, log) => {
     const r = cfg.runner;
-    const cwd = path.resolve(r.cwd || '.');
+    const cwd = assertAllowedRoot(r.cwd || '.', cfg);
     const model = r.model ? ['--model', r.model] : [];
     log('runner', `opencode run trong ${cwd}...`);
     const res = await runProcess('opencode', ['run', ...model, task], cwd, r.timeoutMs || 900000, log);
@@ -110,5 +112,6 @@ export async function runTask(task, cfg, log) {
   const type = cfg.runner.type || 'echo';
   const fn = RUNNERS[type];
   if (!fn) throw new Error(`Runner khong ton tai: ${type} (co san: ${listRunners().join(', ')})`);
+  if (type !== 'echo') gateCheck(task, cfg, log); // echo la runner test, van cho qua
   return fn(task, cfg, log);
 }

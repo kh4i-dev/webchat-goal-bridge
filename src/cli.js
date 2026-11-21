@@ -2,7 +2,12 @@
 // webchat-goal-bridge CLI — zero dependency.
 // Logs go to stderr; data (and --json output) go to stdout.
 
+import fs from 'node:fs';
+import path from 'node:path';
+import crypto from 'node:crypto';
 import { loadConfig, projectRoot, dataDir } from './config.js';
+import fs from 'node:fs';
+import path from 'node:path';
 import { log, initFileLog } from './util/log.js';
 import { ensureOn, ensureOff, cdpStatus, braveProcessCount } from './cdp/browser.js';
 import { listTargets, findPageTargets, newTarget, attach, activateTarget } from './cdp/client.js';
@@ -24,6 +29,7 @@ Cach dung: node src/cli.js <command> [flags]
   probe --platform <p>    Kiem tra da login chua + trang thai page
   read --platform <p>     Doc cac tin nhan gan nhat (--last N, mac 10)
   send --platform <p> --text "..."   Gui 1 tin nhan va cho reply
+                          --image a.png,b.png  dinh kem anh (dataURL -> input[type=file])
   watch --platform <p>    Vong lap: cho tin nhan moi co trigger -> tao goal -> chay runner -> tra ket qua
                           flags: --once (1 vong), --catchup (xu ly tin @bridge dang ton tai), --trigger "@bridge"
   goals [--short]         Xem goal store
@@ -161,8 +167,18 @@ async function cmdSend(cfg, flags) {
   if (!flags.text) throw new Error('thieu --text "..."');
   const ctx = await resolvePlatform(cfg, flags);
   try {
+    const images = [];
+    if (flags.image) {
+      for (const p of String(flags.image).split(',')) {
+        const full = path.resolve(p.trim());
+        const buf = fs.readFileSync(full);
+        const ext = path.extname(full).slice(1).toLowerCase();
+        const mime = ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : ext === 'webp' ? 'image/webp' : 'image/png';
+        images.push({ name: path.basename(full), mime, b64: buf.toString('base64') });
+      }
+    }
     const baseline = (await ctx.connector.readMessages(ctx.conn)).filter((m) => m.role === 'assistant').length;
-    const sent = await ctx.connector.send(ctx.conn, String(flags.text));
+    const sent = await ctx.connector.send(ctx.conn, String(flags.text), { images });
     if (!sent.ok) throw new Error('Gui that bai: ' + JSON.stringify(sent));
     log('send', `da gui (${sent.via}, submitted=${sent.submitted}) — doi reply...`);
     const replies = await ctx.connector.waitForReply(ctx.conn, {
@@ -271,6 +287,22 @@ async function cmdGoals(cfg, flags) {
 }
 
 async function cmdServe(cfg) {
+  // Token tự động: nếu chưa có, sinh 1 lần và lưu vào config.json — dán token này
+  // vào popup extension (field Token) để extension gọi được serve.
+  if (!cfg.serve.token) {
+    const token = crypto.randomBytes(16).toString('hex');
+    cfg.serve.token = token;
+    const cfgPath = path.join(projectRoot(), 'config.json');
+    try {
+      const raw = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+      raw.serve = { ...(raw.serve || {}), token };
+      fs.writeFileSync(cfgPath, JSON.stringify(raw, null, 2));
+      log('serve', 'da tao TOKEN tu dong (luu trong config.json) — dan vao popup extension field "Token":');
+      log('serve', 'TOKEN: ' + token);
+    } catch (err) {
+      log('serve', 'khong luu duoc token:', err.message);
+    }
+  }
   const { startServer } = await import('./server.js');
   startServer(cfg);
   // giu process chay cho den khi Ctrl+C

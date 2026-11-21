@@ -6,6 +6,7 @@
 import http from 'node:http';
 import { createGoal, updateGoal, loadGoals } from './core/goals.js';
 import { runTask, listRunners } from './runners/index.js';
+import { gateCheck, audit } from './security.js';
 import { log } from './util/log.js';
 
 function json(res, code, obj) {
@@ -41,6 +42,11 @@ export function startServer(cfg, logger = log) {
         const body = JSON.parse((await readBody(req)) || '{}');
         const text = String(body.text || '').trim();
         if (!text) return json(res, 400, { error: 'thieu text' });
+        try {
+          gateCheck(text, cfg, logger);
+        } catch (err) {
+          return json(res, 403, { error: err.message });
+        }
         const goal = createGoal({
           platform: body.platform || 'serve',
           chatUrl: body.chatUrl || url.origin,
@@ -53,6 +59,7 @@ export function startServer(cfg, logger = log) {
           .then((r) => updateGoal(goal.id, { status: 'done', finishedAt: new Date().toISOString(), result: r.text }))
           .catch((err) => updateGoal(goal.id, { status: 'failed', finishedAt: new Date().toISOString(), error: String(err.message || err) }));
         logger('serve', 'dispatch goal', goal.id, '—', text.slice(0, 60));
+        audit('dispatch', { goalId: goal.id, platform: goal.platform, task: text.slice(0, 120), runner: cfg.runner.type });
         return json(res, 200, { goalId: goal.id, status: 'queued' });
       }
 
