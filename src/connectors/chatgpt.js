@@ -10,7 +10,7 @@
 import { defineConnector } from './base.js';
 
 const RATE_LIMIT_RE =
-  /too many requests|requests too quickly|whoa,?\s+(that|this).+fast|qu[áa] nhi[ềe]u y[êe]u c[ầa]u|请求过于频繁|请求太多了|हाल में बहुत अधिक/i;
+  /too many requests|requests too quickly|whoa,?\s+(that|this).+fast|qu[áa] nhi[ềe]u y[êe]u c[ầa]u|请求过于频繁|请求太多了|हाल में बहुत अधिक|a temporary limit is preventing|gi[ớo]i h[ạa]n t[ạa]m th[ời]/i;
 
 // Composer ladder 5 lớp — bê nguyên từ chatgpt-use/src/channel.rs (mới nhất).
 const COMPOSER_SELECTOR =
