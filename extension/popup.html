@@ -92,6 +92,30 @@
     .gline .copied.show { opacity: 1; }
     .empty { color: var(--faint); font-size: 11px; padding: 4px 0; }
 
+    /* ── platforms ───────────────────────── */
+    .prow { display: flex; align-items: center; gap: 10px; padding: 7px 6px; margin: 0 -4px; border-radius: 8px; }
+    .prow:hover { background: rgba(255, 255, 255, 0.03); }
+    .prow + .prow { border-top: 1px dashed rgba(255, 255, 255, 0.06); }
+    .picon {
+      width: 30px; height: 30px; border-radius: 8px; flex: none; display: flex; align-items: center; justify-content: center;
+      font: 700 8.5px var(--sans); letter-spacing: .3px; color: #07120f;
+    }
+    .picon.chatgpt { background: linear-gradient(135deg, #10a37f, #0d8a6b); color: #fff; }
+    .picon.gemini { background: linear-gradient(135deg, #8ab4f8, #c58af9); color: #0b1a33; }
+    .picon.claude { background: linear-gradient(135deg, #d97757, #c05a3a); color: #fff; }
+    .pinfo { flex: 1; min-width: 0; }
+    .pname { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; }
+    .pdot { width: 6px; height: 6px; border-radius: 50%; background: var(--faint); }
+    .pdot.live { background: var(--ok); box-shadow: 0 0 6px rgba(16, 185, 129, .6); }
+    .plabel { font-size: 10px; color: var(--faint); }
+    .pbar { height: 4px; background: rgba(255, 255, 255, 0.06); border-radius: 9999px; overflow: hidden; margin: 5px 0 3px; }
+    .pbar > div { height: 100%; border-radius: 9999px; background: var(--info); transition: width .4s cubic-bezier(0.16, 1, 0.3, 1), background .3s; }
+    .pnum { font: 10.5px var(--mono); font-variant-numeric: tabular-nums; color: var(--faint); }
+    .pbadge { font: 500 10px var(--sans); border-radius: 9999px; padding: 2px 8px; border: 1px solid var(--line); color: var(--dim); flex: none; }
+    .pbadge.ok { color: var(--ok); border-color: rgba(16, 185, 129, .35); background: rgba(16, 185, 129, .08); }
+    .pbadge.warn { color: var(--warn); border-color: rgba(245, 158, 11, .35); background: rgba(245, 158, 11, .08); }
+    .pbadge.bad { color: var(--bad); border-color: rgba(239, 68, 68, .35); background: rgba(239, 68, 68, .08); }
+
     /* ── form (tab cài đặt) ──────────────── */
     label { display: block; font-size: 11px; font-weight: 600; color: var(--dim); margin: 10px 0 4px; }
     input[type="text"] {
@@ -154,11 +178,10 @@
   <div class="page" id="page-monitor">
     <div class="card">
       <div class="cardhead">
-        <span class="ct">Ngân sách giờ này</span>
-        <span class="badge" id="limitBadge">Rate limit: OK</span>
+        <span class="ct">Nền tảng</span>
+        <span class="ct" style="color:var(--faint)">mỗi app một hạn mức riêng</span>
       </div>
-      <div class="barrow"><div class="lbl"><span>record fetch</span><b id="bFetch">0/40</b></div><div class="track"><div id="barFetch"></div></div></div>
-      <div class="barrow"><div class="lbl"><span>send</span><b id="bSend">0/40</b></div><div class="track"><div id="barSend"></div></div></div>
+      <div id="platforms"><div class="empty">(đang tải…)</div></div>
     </div>
 
     <div class="card">

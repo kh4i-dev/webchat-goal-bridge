@@ -38,26 +38,54 @@ function rememberDone(h) {
   chrome.storage.local.set({ doneHashes });
 }
 
+// Ledger + rate-limit + presence ĐỘC LẬP THEO NỀN TẢNG — mỗi app một hạn mức riêng.
 let ledger = { hour: new Date().getHours(), recordFetch: 0, sends: 0 };
-chrome.storage.local.get({ ledger: null }, (s) => { if (s.ledger) ledger = s.ledger; });
+chrome.storage.local.get({ ledgers: null }, (s) => {
+  if (s.ledgers && s.ledgers[PLATFORM]) ledger = s.ledgers[PLATFORM];
+});
 function rollLedger() {
   const h = new Date().getHours();
   if (ledger.hour !== h) ledger = { hour: h, recordFetch: 0, sends: 0 };
 }
-function saveLedger() { rollLedger(); chrome.storage.local.set({ ledger }); }
+function saveLedger() {
+  rollLedger();
+  chrome.storage.local.get({ ledgers: {} }, (s) => {
+    const L = s.ledgers || {};
+    L[PLATFORM] = ledger;
+    chrome.storage.local.set({ ledgers: L });
+  });
+}
 function overBudget() { rollLedger(); return ledger.recordFetch >= BUDGET.recordFetch || ledger.sends >= BUDGET.sends; }
 
-// Shared throttle chéo tab — một tab dính limit, tất cả tab cùng nghỉ.
+// Presence beacon: báo "tab này đang sống" để popup hiện dot xanh theo nền tảng.
+function beacon() {
+  chrome.storage.local.get({ presence: {} }, (s) => {
+    const P = s.presence || {};
+    P[PLATFORM] = { ts: Date.now(), url: location.href.slice(0, 140) };
+    chrome.storage.local.set({ presence: P });
+  });
+}
+setInterval(beacon, 10000);
+beacon();
+
+// Shared throttle THEO NỀN TẢNG — tab ChatGPT dính limit không ảnh hưởng Gemini.
 async function getSharedLimit() {
-  const s = await chrome.storage.local.get({ sharedLimit: { until: 0, reason: '' } });
-  return s.sharedLimit && s.sharedLimit.until > Date.now() ? s.sharedLimit : null;
+  const s = await chrome.storage.local.get({ sharedLimits: {} });
+  const mine = (s.sharedLimits || {})[PLATFORM];
+  return mine && mine.until > Date.now() ? mine : null;
 }
 async function setSharedLimit(waitMs, reason) {
-  await chrome.storage.local.set({ sharedLimit: { until: Date.now() + waitMs, reason } });
+  const s = await chrome.storage.local.get({ sharedLimits: {} });
+  const M = s.sharedLimits || {};
+  M[PLATFORM] = { until: Date.now() + waitMs, reason };
+  await chrome.storage.local.set({ sharedLimits: M });
   rateLimitedUntil = Date.now() + waitMs;
 }
 async function clearSharedLimit() {
-  await chrome.storage.local.set({ sharedLimit: { until: 0, reason: '' } });
+  const s = await chrome.storage.local.get({ sharedLimits: {} });
+  const M = s.sharedLimits || {};
+  delete M[PLATFORM];
+  await chrome.storage.local.set({ sharedLimits: M });
   rateLimitedUntil = 0;
   rateLimitStreak = 0;
 }

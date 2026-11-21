@@ -41,29 +41,75 @@ function fmtUp(sec) {
   return h > 0 ? h + 'h ' + m + 'p' : m + 'p';
 }
 
-function renderBudget(ledger, shared) {
-  const setBar = (id, val, max) => {
-    const pct = Math.min(100, Math.round((val / max) * 100));
-    const el = document.getElementById(id);
-    el.style.width = pct + '%';
-    el.style.background = barColor(pct);
-    return val + '/' + max;
-  };
-  const f = Math.min(BUDGET.recordFetch, ledger?.recordFetch || 0);
-  const s2 = Math.min(BUDGET.sends, ledger?.sends || 0);
-  document.getElementById('bFetch').textContent = setBar('barFetch', f, BUDGET.recordFetch);
-  document.getElementById('bSend').textContent = setBar('barSend', s2, BUDGET.sends);
+const PLATFORMS = [
+  { key: 'chatgpt', name: 'ChatGPT', icon: 'GPT' },
+  { key: 'gemini', name: 'Gemini', icon: 'GEM' },
+  { key: 'claude', name: 'Claude', icon: 'CLD' }
+];
 
-  const badge = document.getElementById('limitBadge');
-  if (shared && shared.until > Date.now()) {
-    badge.textContent = 'Rate limit: nghỉ ' + Math.round((shared.until - Date.now()) / 1000) + 's';
-    badge.className = 'badge warn';
-  } else if (f >= BUDGET.recordFetch || s2 >= BUDGET.sends) {
-    badge.textContent = 'Budget: đã hết (đổi giờ)';
-    badge.className = 'badge bad';
-  } else {
-    badge.textContent = 'Rate limit: OK';
-    badge.className = 'badge ok';
+function renderPlatforms(ledgers, sharedLimits, presence) {
+  const el = document.getElementById('platforms');
+  el.innerHTML = '';
+  for (const p of PLATFORMS) {
+    const led = ledgers?.[p.key] || { recordFetch: 0, sends: 0 };
+    const limit = sharedLimits?.[p.key];
+    const limited = limit && limit.until > Date.now();
+    const pres = presence?.[p.key];
+    const live = pres && Date.now() - pres.ts < 30000;
+
+    const row = document.createElement('div');
+    row.className = 'prow';
+
+    const icon = document.createElement('span');
+    icon.className = 'picon ' + p.key;
+    icon.textContent = p.icon;
+    row.appendChild(icon);
+
+    const info = document.createElement('div');
+    info.className = 'pinfo';
+    const name = document.createElement('div');
+    name.className = 'pname';
+    name.textContent = p.name;
+    const dot = document.createElement('span');
+    dot.className = 'pdot' + (live ? ' live' : '');
+    dot.title = live ? 'Tab đang mở và beacon' : 'Chưa thấy tab nào của nền tảng này';
+    name.appendChild(dot);
+    const lab = document.createElement('span');
+    lab.className = 'plabel';
+    lab.textContent = live ? 'đang hoạt động' : 'tab chưa mở';
+    name.appendChild(lab);
+    info.appendChild(name);
+
+    const total = Math.max(led.recordFetch || 0, led.sends || 0);
+    const pct = Math.min(100, Math.round((total / BUDGET.recordFetch) * 100));
+    const bar = document.createElement('div');
+    bar.className = 'pbar';
+    const fill = document.createElement('div');
+    fill.style.width = pct + '%';
+    fill.style.background = barColor(pct);
+    bar.appendChild(fill);
+    info.appendChild(bar);
+
+    const num = document.createElement('div');
+    num.className = 'pnum';
+    num.textContent = 'fetch ' + (led.recordFetch || 0) + '/' + BUDGET.recordFetch + ' · send ' + (led.sends || 0) + '/' + BUDGET.sends;
+    info.appendChild(num);
+    row.appendChild(info);
+
+    const badge = document.createElement('span');
+    if (limited) {
+      badge.className = 'pbadge warn';
+      badge.textContent = 'nghỉ ' + Math.max(0, Math.round((limit.until - Date.now()) / 1000)) + 's';
+      badge.title = limit.reason || '429';
+    } else if (pct > 90) {
+      badge.className = 'pbadge bad';
+      badge.textContent = 'gần hạn mức';
+    } else {
+      badge.className = 'pbadge ok';
+      badge.textContent = 'OK';
+    }
+    row.appendChild(badge);
+    el.appendChild(row);
   }
 }
 
@@ -112,7 +158,9 @@ function refreshLive() {
       : 'Offline';
   });
   relay({ path: '/goals?limit=5', method: 'GET' }, (res) => renderGoals(res.data || []));
-  chrome.storage.local.get({ ledger: null, sharedLimit: null }, (s) => renderBudget(s.ledger, s.sharedLimit));
+  chrome.storage.local.get({ ledgers: null, sharedLimits: null, presence: null }, (s) =>
+    renderPlatforms(s.ledgers, s.sharedLimits, s.presence)
+  );
 }
 
 refreshLive();
