@@ -6,8 +6,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { loadConfig, projectRoot, dataDir } from './config.js';
-import fs from 'node:fs';
-import path from 'node:path';
 import { log, initFileLog } from './util/log.js';
 import { ensureOn, ensureOff, cdpStatus, braveProcessCount } from './cdp/browser.js';
 import { listTargets, findPageTargets, newTarget, attach, activateTarget } from './cdp/client.js';
