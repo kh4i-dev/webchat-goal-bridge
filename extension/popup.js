@@ -2,8 +2,18 @@ const FIELDS = { serverUrl: '', token: '', trigger: '@wgb' };
 const CHECKS = { enabled: true, autoSend: true };
 const BUDGET = { recordFetch: 40, sends: 40 };
 const manifest = chrome.runtime.getManifest();
-document.getElementById('ver').textContent = 'v' + manifest.version;
+document.getElementById('ver');
 
+// ── tabs ─────────────────────────────────────
+document.querySelectorAll('.tab').forEach((t) => {
+  t.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach((x) => x.classList.toggle('active', x === t));
+    document.getElementById('page-monitor').classList.toggle('hidden', t.dataset.tab !== 'monitor');
+    document.getElementById('page-settings').classList.toggle('hidden', t.dataset.tab !== 'settings');
+  });
+});
+
+// ── load settings ────────────────────────────
 chrome.storage.sync.get({ ...FIELDS, ...CHECKS }, (s) => {
   document.getElementById('serverUrl').value = s.serverUrl;
   document.getElementById('token').value = s.token;
@@ -19,28 +29,45 @@ function relay(msg, cb) {
   });
 }
 
+function barColor(pct) {
+  if (pct > 90) return 'var(--bad)';
+  if (pct > 75) return 'var(--warn)';
+  return 'var(--info)';
+}
+
+function fmtUp(sec) {
+  const h = Math.floor(sec / 3600);
+  const m = Math.round((sec % 3600) / 60);
+  return h > 0 ? h + 'h ' + m + 'p' : m + 'p';
+}
+
 function renderBudget(ledger, shared) {
+  const setBar = (id, val, max) => {
+    const pct = Math.min(100, Math.round((val / max) * 100));
+    const el = document.getElementById(id);
+    el.style.width = pct + '%';
+    el.style.background = barColor(pct);
+    return val + '/' + max;
+  };
   const f = Math.min(BUDGET.recordFetch, ledger?.recordFetch || 0);
   const s2 = Math.min(BUDGET.sends, ledger?.sends || 0);
-  document.getElementById('bFetch').textContent = f + '/' + BUDGET.recordFetch;
-  const bf = document.getElementById('barFetch');
-  bf.style.width = Math.round((f / BUDGET.recordFetch) * 100) + '%';
-  bf.className = f >= BUDGET.recordFetch ? 'hot' : '';
-  document.getElementById('bSend').textContent = s2 + '/' + BUDGET.sends;
-  const bs = document.getElementById('barSend');
-  bs.style.width = Math.round((s2 / BUDGET.sends) * 100) + '%';
-  bs.className = s2 >= BUDGET.sends ? 'hot' : '';
-  const li = document.getElementById('limitInfo');
+  document.getElementById('bFetch').textContent = setBar('barFetch', f, BUDGET.recordFetch);
+  document.getElementById('bSend').textContent = setBar('barSend', s2, BUDGET.sends);
+
+  const badge = document.getElementById('limitBadge');
   if (shared && shared.until > Date.now()) {
-    li.textContent = 'nghỉ ' + Math.round((shared.until - Date.now()) / 1000) + 's (' + (shared.reason || '429') + ')';
-    li.className = 'warn';
+    badge.textContent = 'Rate limit: nghỉ ' + Math.round((shared.until - Date.now()) / 1000) + 's';
+    badge.className = 'badge warn';
+  } else if (f >= BUDGET.recordFetch || s2 >= BUDGET.sends) {
+    badge.textContent = 'Budget: đã hết (đổi giờ)';
+    badge.className = 'badge bad';
   } else {
-    li.textContent = 'OK';
-    li.className = 'ok';
+    badge.textContent = 'Rate limit: OK';
+    badge.className = 'badge ok';
   }
 }
 
-const ST_TAG = { done: '[OK] ', failed: '[ERR]', running: '[RUN]', queued: '[QUE]' };
+const CHK = { done: '✓', failed: '✕', running: '▸', queued: '…' };
 function renderGoals(goals) {
   const el = document.getElementById('goals');
   if (!Array.isArray(goals) || !goals.length) {
@@ -50,32 +77,39 @@ function renderGoals(goals) {
   el.innerHTML = '';
   for (const g of goals.slice(0, 5)) {
     const ln = document.createElement('div');
-    ln.className = 'ln';
-    const st = document.createElement('span');
-    st.className = 'st ' + g.status;
-    st.textContent = ST_TAG[g.status] || '[···]';
-    const id = document.createElement('span');
-    id.className = 'gid';
-    id.textContent = g.id.slice(0, 10);
+    ln.className = 'gline';
+    const chk = document.createElement('span');
+    chk.className = 'chk ' + (g.status || 'queued');
+    chk.textContent = CHK[g.status] || '…';
+    const gid = document.createElement('span');
+    gid.className = 'gid';
+    gid.textContent = g.id.slice(0, 10);
     const task = document.createElement('span');
     task.className = 'task';
     task.textContent = (g.task || '').slice(0, 60);
-    ln.appendChild(st); ln.appendChild(id); ln.appendChild(task);
+    const copied = document.createElement('span');
+    copied.className = 'copied';
+    copied.textContent = 'Copied!';
+    ln.appendChild(chk); ln.appendChild(gid); ln.appendChild(task); ln.appendChild(copied);
+    ln.title = 'Click: copy ID · ' + g.status;
+    ln.addEventListener('click', () => {
+      navigator.clipboard.writeText(g.id).then(() => {
+        copied.classList.add('show');
+        setTimeout(() => copied.classList.remove('show'), 1100);
+      });
+    });
     el.appendChild(ln);
   }
 }
 
 function refreshLive() {
   relay({ path: '/status', method: 'GET' }, (res) => {
-    const el = document.getElementById('serverInfo');
-    if (res.data) {
-      const up = res.data.uptimeSec >= 3600
-        ? Math.floor(res.data.uptimeSec / 3600) + 'h' + Math.round((res.data.uptimeSec % 3600) / 60) + 'p'
-        : Math.round(res.data.uptimeSec / 60) + 'p';
-      el.innerHTML = '<span class="led"></span><span class="ok">online</span> &nbsp;runner: <span class="info">' + res.data.runner + '</span> &nbsp;· up ' + up;
-    } else {
-      el.innerHTML = '<span class="led bad"></span><span class="bad">offline</span> — ' + (res.error || 'chạy: node src/cli.js serve');
-    }
+    const online = Boolean(res.data);
+    document.body.classList.toggle('online', online);
+    document.body.classList.toggle('offline', !online);
+    document.getElementById('statusText').textContent = online
+      ? 'Online · ' + fmtUp(res.data.uptimeSec)
+      : 'Offline';
   });
   relay({ path: '/goals?limit=5', method: 'GET' }, (res) => renderGoals(res.data || []));
   chrome.storage.local.get({ ledger: null, sharedLimit: null }, (s) => renderBudget(s.ledger, s.sharedLimit));
@@ -84,6 +118,7 @@ function refreshLive() {
 refreshLive();
 setInterval(refreshLive, 5000);
 
+// ── settings actions ─────────────────────────
 document.getElementById('save').addEventListener('click', () => {
   chrome.storage.sync.set(
     {
@@ -93,15 +128,40 @@ document.getElementById('save').addEventListener('click', () => {
       enabled: document.getElementById('enabled').checked,
       autoSend: document.getElementById('autoSend').checked
     },
-    () => { document.getElementById('status').textContent = 'Đã lưu — reload tab chat để áp dụng.'; }
+    () => {
+      const st = document.getElementById('status');
+      st.textContent = '✓ Đã lưu — reload tab chat để áp dụng.';
+      setTimeout(() => { st.textContent = ''; }, 2500);
+    }
   );
 });
 
-document.getElementById('test').addEventListener('click', () => {
-  const st = document.getElementById('status');
-  st.textContent = 'Đang gọi /status ...';
+const testBtn = document.getElementById('test');
+testBtn.addEventListener('click', () => {
+  const t0 = performance.now();
+  testBtn.classList.add('busy');
+  testBtn.innerHTML = '<span class="spin"></span>Đang kiểm tra…';
   relay({ path: '/status', method: 'GET' }, (res) => {
-    if (res.data) st.textContent = `OK — runner: ${res.data.runner}, goals: ${res.data.goals}, uptime: ${res.data.uptimeSec}s`;
-    else st.textContent = 'LỖI: ' + (res.error || 'không kết nối được wgb serve');
+    const ms = Math.round(performance.now() - t0);
+    testBtn.classList.remove('busy');
+    testBtn.textContent = res.data ? '✓ ' + ms + 'ms' : '✕ Không kết nối được';
+    setTimeout(() => { testBtn.textContent = 'Kiểm tra kết nối'; }, 2600);
   });
+});
+
+// ── token eye / paste ────────────────────────
+const tokenInput = document.getElementById('token');
+document.getElementById('eye').addEventListener('click', () => {
+  tokenInput.type = tokenInput.type === 'password' ? 'text' : 'password';
+});
+document.getElementById('paste').addEventListener('click', async () => {
+  try {
+    const text = await navigator.clipboard.readText();
+    if (text) {
+      tokenInput.value = text.trim();
+      tokenInput.type = 'text';
+    }
+  } catch {
+    /* clipboard bị chặn — user tự dán */
+  }
 });
