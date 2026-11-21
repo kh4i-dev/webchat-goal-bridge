@@ -4,14 +4,48 @@ const BUDGET = globalThis.WGB_LIB.BUDGET;
 const manifest = chrome.runtime.getManifest();
 document.getElementById('ver');
 
-// ── tabs ─────────────────────────────────────
-document.querySelectorAll('.tab').forEach((t) => {
-  t.addEventListener('click', () => {
-    document.querySelectorAll('.tab').forEach((x) => x.classList.toggle('active', x === t));
-    document.getElementById('page-monitor').classList.toggle('hidden', t.dataset.tab !== 'monitor');
-    document.getElementById('page-settings').classList.toggle('hidden', t.dataset.tab !== 'settings');
+// ── tabs (v1.9: ARIA + keyboard navigation theo blueprint Gemini) ──
+function switchTab(tabName, { focusToken = false } = {}) {
+  document.querySelectorAll('[role="tab"]').forEach((tab) => {
+    const isTarget = tab.dataset.tab === tabName;
+    tab.classList.toggle('active', isTarget);
+    tab.setAttribute('aria-selected', String(isTarget));
+    tab.tabIndex = isTarget ? 0 : -1;
+    const panel = document.getElementById(tab.getAttribute('aria-controls'));
+    if (panel) panel.classList.toggle('hidden', !isTarget);
   });
+  if (focusToken) document.getElementById('token')?.focus();
+}
+document.querySelectorAll('[role="tab"]').forEach((t) => {
+  t.addEventListener('click', () => switchTab(t.dataset.tab));
 });
+document.querySelector('[role="tablist"]')?.addEventListener('keydown', (e) => {
+  if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+  const tabs = [...document.querySelectorAll('[role="tab"]')];
+  const cur = tabs.indexOf(document.activeElement);
+  if (cur === -1) return;
+  const next = (cur + (e.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
+  tabs[next].focus();
+  tabs[next].click();
+});
+
+// ── click-to-copy (empty state + mọi [data-copy]) ───────────────
+function bindCopyButtons(root = document) {
+  root.querySelectorAll('[data-copy]').forEach((el) => {
+    if (el.dataset.copyBound) return;
+    el.dataset.copyBound = '1';
+    el.addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(el.dataset.copy);
+        const prev = el.textContent;
+        el.textContent = '✓ Copied';
+        el.classList.add('is-copied');
+        setTimeout(() => { el.textContent = prev; el.classList.remove('is-copied'); }, 1200);
+      } catch { /* clipboard bị chặn */ }
+    });
+  });
+}
+bindCopyButtons();
 
 // ── load settings ────────────────────────────
 chrome.storage.sync.get({ ...FIELDS, ...CHECKS }, (s) => {
@@ -25,7 +59,9 @@ chrome.storage.sync.get({ ...FIELDS, ...CHECKS }, (s) => {
 function relay(msg, cb) {
   chrome.runtime.sendMessage(msg, (res) => {
     const err = chrome.runtime.lastError;
-    cb(err ? { error: 'context-invalidated' } : res && res.ok ? { data: res.data } : { error: (res && (res.error || res.status)) || 'no-response' });
+    // v1.9: trả nguyên { ok, status, data, error } để popup phân biệt
+    // Offline (fetch fail) với No Token (401/403) — hai cách sửa khác nhau.
+    cb(err ? { error: 'context-invalidated' } : (res || { error: 'no-response' }));
   });
 }
 
@@ -99,8 +135,9 @@ function renderPlatforms(ledgers, sharedLimits, presence) {
 
     const badge = document.createElement('span');
     if (limited) {
+      // v1.9 (blueprint Gemini): "nghỉ" mơ hồ — nói rõ lý do 429
       badge.className = 'pbadge warn';
-      badge.textContent = 'nghỉ ' + Math.max(0, Math.round((limit.until - Date.now()) / 1000)) + 's';
+      badge.textContent = '429 · chờ ' + Math.max(0, Math.round((limit.until - Date.now()) / 1000)) + 's';
       badge.title = limit.reason || '429';
     } else if (bs.level === 'blocked') {
       badge.className = 'pbadge bad';
@@ -113,16 +150,26 @@ function renderPlatforms(ledgers, sharedLimits, presence) {
       badge.className = 'pbadge ok';
       badge.textContent = 'OK';
     }
+    // trạng thái_budget lên chính card (nền đỏ tint + mờ tên khi chặn)
+    row.dataset.budget = limited ? 'cooldown' : bs.level;
     row.appendChild(badge);
     el.appendChild(row);
   }
 }
 
 const CHK = { done: '✓', failed: '✕', running: '▸', queued: '…' };
+const GOALS_EMPTY_HTML =
+  '<div class="empty">' +
+  '<div>chưa có goal — gõ <button type="button" class="code-copy" data-copy="@wgb status">@wgb &lt;task&gt;</button> trong chat</div>' +
+  '<div class="empty-example">Ví dụ: <code>@wgb tóm tắt diff git hiện tại</code></div>' +
+  '</div>';
 function renderGoals(goals) {
   const el = document.getElementById('goals');
+  const hint = document.getElementById('goals-hint');
+  if (hint) hint.style.opacity = Array.isArray(goals) && goals.length ? '1' : '0';
   if (!Array.isArray(goals) || !goals.length) {
-    el.innerHTML = '<div class="empty">(chưa có goal — gõ @wgb &lt;task&gt; trong chat)</div>';
+    el.innerHTML = GOALS_EMPTY_HTML;
+    bindCopyButtons(el);
     return;
   }
   el.innerHTML = '';
@@ -153,16 +200,56 @@ function renderGoals(goals) {
   }
 }
 
+function setServerPill(state, label, title) {
+  const pillEl = document.getElementById('server-status');
+  if (pillEl) {
+    pillEl.dataset.state = state;
+    pillEl.title = title || '';
+    pillEl.onclick = state === 'no-auth' ? () => switchTab('settings', { focusToken: true }) : null;
+  }
+  document.body.classList.toggle('online', state === 'online');
+  document.body.classList.toggle('offline', state !== 'online');
+  document.getElementById('statusText').textContent = label;
+}
+
+// v1.9 (blueprint Gemini): 3 trạng thái — Online / No Token (401/403) / Offline
 function refreshLive() {
   relay({ path: '/status', method: 'GET' }, (res) => {
-    const online = Boolean(res.data);
-    document.body.classList.toggle('online', online);
-    document.body.classList.toggle('offline', !online);
-    document.getElementById('statusText').textContent = online
-      ? 'Online · ' + fmtUp(res.data.uptimeSec)
-      : 'Offline';
+    if (res.ok && res.data) {
+      setServerPill('online', 'Online · ' + fmtUp(res.data.uptimeSec), 'Kết nối wgb serve ổn định');
+    } else if (res.status === 401 || res.status === 403) {
+      setServerPill('no-auth', 'Chưa có token', 'Server đang chạy nhưng thiếu/sai token — bấm để mở Cấu hình');
+    } else {
+      setServerPill('offline', 'Offline', 'Không kết nối được 127.0.0.1:8787 — hãy chạy: node src/cli.js serve');
+    }
   });
-  relay({ path: '/goals?limit=5', method: 'GET' }, (res) => renderGoals(res.data || []));
+  relay({ path: '/goals?limit=5', method: 'GET' }, (res) => {
+    const goals = res.data || [];
+    renderGoals(goals);
+    // v1.9: goal đang chạy được pin lên banner ngay dưới tab bar
+    const banner = document.getElementById('goal-banner');
+    const active = Array.isArray(goals)
+      ? goals.find((g) => g.status === 'running' || g.status === 'queued')
+      : null;
+    if (banner) {
+      if (active) {
+        banner.classList.remove('hidden');
+        banner.innerHTML = '';
+        const chk = document.createElement('span');
+        chk.textContent = CHK[active.status] || '…';
+        const gid = document.createElement('span');
+        gid.className = 'gid';
+        gid.textContent = active.id.slice(0, 10);
+        const task = document.createElement('span');
+        task.style.cssText = 'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
+        task.textContent = (active.task || '').slice(0, 46);
+        banner.appendChild(chk); banner.appendChild(gid); banner.appendChild(task);
+        banner.title = active.status + ' — bấm dòng trong danh sách để copy ID';
+      } else {
+        banner.classList.add('hidden');
+      }
+    }
+  });
   chrome.storage.local.get({ ledgers: null, sharedLimits: null, presence: null }, (s) =>
     renderPlatforms(s.ledgers, s.sharedLimits, s.presence)
   );
@@ -197,7 +284,9 @@ testBtn.addEventListener('click', () => {
   relay({ path: '/status', method: 'GET' }, (res) => {
     const ms = Math.round(performance.now() - t0);
     testBtn.classList.remove('busy');
-    testBtn.textContent = res.data ? '✓ ' + ms + 'ms' : '✕ Không kết nối được';
+    if (res.ok && res.data) testBtn.textContent = '✓ ' + ms + 'ms';
+    else if (res.status === 401 || res.status === 403) testBtn.textContent = '✕ Token sai/thiếu';
+    else testBtn.textContent = '✕ Không kết nối được';
     setTimeout(() => { testBtn.textContent = 'Kiểm tra kết nối'; }, 2600);
   });
 });

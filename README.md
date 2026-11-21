@@ -54,6 +54,15 @@ DOM drift, and reply echo-loops.
  You (ChatGPT / Gemini / Claude web tab, already logged in)
         │  types:  @bridge <task>          (or @wgb via the extension)
         ▼
+```
+
+> **Trigger aliases (do not mix these up):** `@bridge` is the CLI/watch trigger
+> (`config.json → trigger`), `@wgb` is the browser-extension trigger (popup → Cấu hình).
+> They are two front doors to the same goal store — the extension only listens for `@wgb`,
+> the file watcher/CLI only listens for `@bridge`.
+
+```
+
 ┌───────────────────────────────────────────────────────────┐
 │ webchat-goal-bridge                                       │
 │  ① detect new trigger message (CDP watch / extension)     │
