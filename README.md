@@ -18,9 +18,13 @@ brain; a local agent becomes the hands — with a closed review loop between the
 
 </div>
 
-<!-- ▶ Demo: drop a short GIF at docs/demo.gif and uncomment:
-<img src="docs/demo.gif" alt="wgb in action" width="720">
--->
+<div align="center">
+
+[<img src="docs/demo.gif" alt="wgb demo: @bridge → echo runner → result typed back into chat" width="720">](docs/demo.gif)
+
+*Hover to pause / click to view larger*
+
+</div>
 
 ---
 
@@ -28,21 +32,21 @@ brain; a local agent becomes the hands — with a closed review loop between the
 
 Frontier models in web chat — **including free tiers** — are excellent planners
 and reviewers, but they can't touch your machine. Local coding agents can
-execute, but you lose the conversation-driven loop where you (or the chat
-itself) direct, inspect and accept the work.
+execute, but you lose the conversation-driven loop where you (or the chat itself)
+direct, inspect and accept the work.
 
 **wgb stitches the two together:**
 
 ```
-You + web chat (the brain)  ──@bridge <task>──►  wgb  ──►  local runner (the hands)
+ You + web chat (the brain)  ──@bridge <task>──►  wgb  ──►  local runner (the hands)
         ▲                                                        │
         └────────── "[wgb] Goal <id>: <result>" ─────────────────┘
                      posted back into the same chat for review
 ```
 
 Unlike most bridges, it is **two-way with an acceptance loop**, and it was built
-around the failure modes that kill similar projects in practice: platform
-throttling, DOM drift, and reply echo-loops.
+around the failure modes that kill similar projects in practice: platform throttling,
+DOM drift, and reply echo-loops.
 
 ## How it works
 
@@ -161,7 +165,7 @@ Shared by the `inbox` runner and the standalone watcher:
 
 The parts that took real damage to learn — all synthesized from prior art:
 
-- **Record-first, DOM-as-keyboard.** ChatGPT messages are read from
+- **Record-first, DOM as keyboard.** ChatGPT messages are read from
   `/backend-api/conversation/<id>` (the 2026 UI dropped role attributes);
   the DOM is only used to type and click.
 - **Submit receipt.** After submitting, the user-turn count **must** increase.
@@ -188,7 +192,7 @@ The parts that took real damage to learn — all synthesized from prior art:
   stripped first, so *"do not run rm -rf"* can't whitelist itself.
 - **Workspace allowlist.** Runner working directories must stay inside
   `runner.allowedRoots` — paths from chat are never trusted.
-- **Token-authed control plane.** `wgb serve` generates a token in `config.json`;
+- **Control plane has token.** `wgb serve` generates a token in `config.json`;
   the extension must present it.
 - **Audit trail.** Every dispatch and every gate block is appended to `data/events.jsonl`.
 - **CDP reality check.** Port `9222` lets **any local process** control the whole
@@ -229,8 +233,8 @@ You can — this exists for a different loop: letting the *web chat itself*
 the result in the same conversation, and iterate until it's accepted.
 
 **Is this Windows-only?**
-The core CLI is plain Node ≥ 22. Verified on Windows 11 + Brave; the `brave
-on/off` helper and `.bat` launchers assume Windows, other platforms are untested.
+The core CLI is plain Node ≥ 22. Verified on Windows 11 + Brave; the `brave`
+helper and `.bat` files assume Windows, other platforms are untested.
 
 ## Roadmap
 

@@ -18,6 +18,14 @@ bộ não; agent trên máy thành tay chân — với vòng nghiệm thu khép 
 
 </div>
 
+<div align="center">
+
+[<img src="docs/demo.gif" alt="wgb demo: @bridge → echo runner → kết quả tự gõ ngược vào chat" width="720">](docs/demo.gif)
+
+*Nhấn giữ chuột để dừng / click xem phiên bản lớn hơn*
+
+</div>
+
 ---
 
 ## Tại sao?
@@ -30,7 +38,7 @@ soi và duyệt từng bước.
 **wgb nối hai bên lại:**
 
 ```
-Bạn + web chat (não chỉ đạo) ──@bridge <việc>──►  wgb  ──►  runner trên máy (tay chân)
+ Bạn + web chat (não chỉ đạo) ──@bridge <việc>──►  wgb  ──►  runner trên máy (tay chân)
         ▲                                                         │
         └─────────── "[wgb] Goal <id>: <kết quả>" ────────────────┘
                       gửi ngược vào đúng cuộc chat để duyệt
@@ -238,7 +246,7 @@ on/off` và các file `.bat` mặc định Windows, nền tảng khác chưa tes
 Issue và PR đều được hoan nghênh! Giữ ràng buộc zero-dependency (chỉ Node
 stdlib) — đó là một tính năng. Chạy `npm test` trước khi gửi PR.
 
-## Credits
+## Acknowledgments
 
 wgb tổng hợp cơ chế từ ~13 repo prior art mã nguồn mở:
 `chatgpt-use`, `aegisloop`, `auto-chat`, `AgentControlPlane`,
