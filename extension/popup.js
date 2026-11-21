@@ -157,6 +157,7 @@ function renderPlatforms(ledgers, sharedLimits, presence) {
     }
     // trạng thái_budget lên chính card (nền đỏ tint + mờ tên khi chặn)
     row.dataset.budget = limited ? 'cooldown' : bs.level;
+    row.dataset.live = live ? '1' : '0';
     row.appendChild(badge);
     el.appendChild(row);
   }
@@ -179,11 +180,15 @@ function renderGoals(goals) {
   }
   el.innerHTML = '';
   for (const g of goals.slice(0, 5)) {
-    const ln = document.createElement('div');
+    // v1.9.2 (spec a11y): goal row là <button> — Tab tới + Enter/Space copy
+    const ln = document.createElement('button');
+    ln.type = 'button';
     ln.className = 'gline';
+    ln.setAttribute('aria-label', 'Copy goal ID ' + g.id + ': ' + (g.task || '').slice(0, 40));
     const chk = document.createElement('span');
     chk.className = 'chk ' + (g.status || 'queued');
     chk.textContent = CHK[g.status] || '…';
+    chk.setAttribute('aria-hidden', 'true');
     const gid = document.createElement('span');
     gid.className = 'gid';
     gid.textContent = g.id.slice(0, 10);
@@ -193,11 +198,14 @@ function renderGoals(goals) {
     const copied = document.createElement('span');
     copied.className = 'copied';
     copied.textContent = 'Copied!';
+    copied.setAttribute('aria-hidden', 'true');
     ln.appendChild(chk); ln.appendChild(gid); ln.appendChild(task); ln.appendChild(copied);
     ln.title = 'Click: copy ID · ' + g.status;
     ln.addEventListener('click', () => {
       navigator.clipboard.writeText(g.id).then(() => {
         copied.classList.add('show');
+        const ann = document.getElementById('wgb-announcer');
+        if (ann) ann.textContent = 'Đã sao chép ID ' + g.id;
         setTimeout(() => copied.classList.remove('show'), 1100);
       });
     });
